@@ -428,7 +428,7 @@ namespace palace
     namespace mesh
     {
 
-        void ConvertMeshComsol(const std::string& filename, std::ostream& buffer)
+        void ConvertMeshComsol(const std::string& filename, std::ostream& buffer, bool warn)
         {
             // Read a COMSOL format mesh.
             const int comsol_bin = !filename.compare(filename.length() - 7, 7, ".mphbin") ||
@@ -839,9 +839,12 @@ namespace palace
                                 }
 
                                 // Debug
-                                std::cout << "Finished parsing " << num_elem
-                                          << " elements with type " << elem_type
-                                          << " (parsed types " << parsed_types + 1 << ")\n";
+                                if(warn)
+                                {
+                                    std::cout << "Finished parsing " << num_elem
+                                            << " elements with type " << elem_type
+                                            << " (parsed types " << parsed_types + 1 << ")\n";
+                                }
 
                                 // Finished with this element type, on to the next.
                                 parsed_types++;

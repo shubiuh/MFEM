@@ -14,10 +14,10 @@ namespace palace::mesh
 	//
 
 	// Convert a binary or ASCII COMSOL (.mphbin/.mphtxt) mesh to Gmsh v2.2.
-	void ConvertMeshComsol(const std::string& filename, std::ostream& buffer);
+	void ConvertMeshComsol(const std::string& filename, std::ostream& buffer, bool warn=flase);
 
 	// Convert an ASCII NASTRAN (.nas/.bdf) mesh to Gmsh v2.2.
-	void ConvertMeshNastran(const std::string& filename, std::ostream& buffer);
+	void ConvertMeshNastran(const std::string& filename, std::ostream& buffer, bool warn=flase);
 
 }  // namespace palace::mesh
 
