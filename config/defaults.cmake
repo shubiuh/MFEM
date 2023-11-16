@@ -132,7 +132,7 @@ set(SuiteSparse_DIR "D:/Dropbox/Github/suitesparse-metis-for-windows/SuiteSparse
 set(SuiteSparse_REQUIRED_PACKAGES "BLAS" "METIS"
     CACHE STRING "Additional packages required by SuiteSparse.")
 
-set(ParMETIS_DIR "${MFEM_DIR}/../parmetis-4.0.3" CACHE PATH
+set(ParMETIS_DIR "C:/opt/ParMETIS" CACHE PATH
     "Path to the ParMETIS library.")
 set(ParMETIS_REQUIRED_PACKAGES "METIS" CACHE STRING
     "Additional packages required by ParMETIS.")
@@ -144,7 +144,7 @@ set(SuperLUDist_REQUIRED_PACKAGES "MPI" "ParMETIS" "METIS"
     "LAPACK" "BLAS" CACHE STRING
     "Additional packages required by SuperLU_DIST.")
 
-set(MUMPS_DIR "${MFEM_DIR}/../MUMPS_5.5.0" CACHE PATH
+set(MUMPS_DIR "C:/opt/mumps-5.6.1" CACHE PATH
     "Path to the MUMPS library.")
 # MUMPS may also depend on "OpenMP", depending on how it was compiled.
 set(MUMPS_REQUIRED_PACKAGES "MPI" "MPI_Fortran" "ParMETIS" "METIS"
@@ -175,8 +175,10 @@ set(Scotch_REQUIRED_PACKAGES "Threads" CACHE STRING
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(Threads_LIB_VARS CMAKE_THREAD_LIBS_INIT)
 
-# The ScaLAPACK library, required by STRUMPACK
-set(ScaLAPACK_DIR "${MFEM_DIR}/../scalapack-2.0.2/lib/cmake/scalapack-2.0.2"
+# The ScaLAPACK library, required by STRUMPACK and MUMPS
+# set(SCALAPACK_LIB "C:/opt/scalapack/SCALAPACK.lib" CACHE FILEPATH "Path to the ScaLAPACK library file")
+
+set(ScaLAPACK_DIR "C:/msys64/home/shubi/scalapack/build/cmake"
     CACHE PATH "Path to the configuration file scalapack-config.cmake")
 set(ScaLAPACK_TARGET_NAMES scalapack)
 # set(ScaLAPACK_TARGET_FORCE)

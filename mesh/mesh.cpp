@@ -12321,7 +12321,6 @@ int Mesh::FindVertex(Vector& point, Array<int>& elem_ids,
     if (!dim) { return 0; }
     MFEM_VERIFY(dim == spaceDim, "Invalid point coordinate");
 
-    std::vector<int> elementsWithVertex;
     int elems_found = 0;
     InverseElementTransformation* inv_tr = inv_trans;
     inv_tr = inv_tr ? inv_tr : new InverseElementTransformation;
@@ -12369,9 +12368,9 @@ int Mesh::FindVertex(Vector& point, Array<int>& elem_ids,
         }
         elems_found = FindPoints(points_mat, elem_ids, ips); //find if point is inside a element
     }
-    if (!elems_found)
+    if (warn && !elems_found)
     {
-        MFEM_VERIFY(elems_found > 0, "No valid element is found!");
+        MFEM_WARNING("No valid element is found!");
     }
 
     return elems_found;

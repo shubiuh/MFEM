@@ -25,6 +25,7 @@ CMakeFiles/
 /build/
 /out/
 .vs
+.vscode
 
 # Generated files in main directory, config/ and docs/
 /deps.mk

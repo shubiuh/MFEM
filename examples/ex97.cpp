@@ -84,7 +84,7 @@ static constexpr double mu0_ = 4.0e-7 * M_PI;
 
 static double mu_ = 1.0;
 static double epsilon_ = 1.0;
-static double sigma_ = 1.0;
+static double sigma_ = 0.0;
 double omega_ = 10.0;
 
 double u0_real_exact(const Vector&);
@@ -421,7 +421,7 @@ int main(int argc, char* argv[])
     else if (meshdim == 2)
     {
         Vector dir(2);
-        dir[0] = 1.0; dir[1] = 1.0;
+        dir[0] = 0.0; dir[1] = 1.0;
         delta_one = new VectorDeltaCoefficient(dir, position, position, src_scalar);
     }
     else if (meshdim == 3)
@@ -475,10 +475,8 @@ int main(int argc, char* argv[])
     //       -Grad(a Div) - omega^2 b + i omega c
     //
     ConstantCoefficient stiffnessCoef(1.0 / mu_ / mu0_);
-    ConstantCoefficient massCoef(-omega_ * omega_ * epsilon_ * epsilon0_); 
-    std::cout << std::setw(20) << ( - omega_ * omega_ * epsilon_ * epsilon0_) << std::endl;
-    ConstantCoefficient lossCoef(omega_ * sigma_); 
-    std::cout << std::setw(20) << (omega_ * sigma_) << std::endl;
+    ConstantCoefficient massCoef(-omega_ * omega_ * epsilon_ * epsilon0_); std::cout << std::setw(20) << ( - omega_ * omega_ * epsilon_ * epsilon0_) << std::endl;
+    ConstantCoefficient lossCoef(omega_ * sigma_); std::cout << std::setw(20) << (omega_ * sigma_) << std::endl;
     ConstantCoefficient negMassCoef(omega_ * omega_ * epsilon_ * epsilon0_);
 
     DenseMatrix sigmaMat(meshdim);
@@ -1334,8 +1332,8 @@ void PML::StretchFunction(const Vector &x,
 {
    complex<double> zi = complex<double>(0., 1.);
 
-   double n = 2.0;
-   double c = 10.0;
+   double n = 5.0;
+   double c = 100.0;
    double coeff;
    double k = omega_ * sqrt(epsilon0_ * epsilon_ * mu_ * mu0_);
 

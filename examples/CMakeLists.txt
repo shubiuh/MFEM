@@ -76,6 +76,7 @@ if (MFEM_USE_MPI)
     ex24p.cpp
     ex25p.cpp
     ex26p.cpp
+    ex26p_Hcurl.cpp
     ex27p.cpp
     ex28p.cpp
     ex29p.cpp
@@ -86,6 +87,7 @@ if (MFEM_USE_MPI)
     ex34p.cpp
     ex35p.cpp
     ex36p.cpp
+    ex99p_test_PML.cpp
     )
 endif()
 

@@ -34,6 +34,7 @@
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
+#include <filesystem>
 
 #ifdef _WIN32
 #define jn(n, x) _jn(n, x)
@@ -42,6 +43,8 @@
 
 using namespace std;
 using namespace mfem;
+
+const auto MSH_FLT_PRECISION = std::numeric_limits<double>::max_digits10;
 
 // Class for setting up a simple Cartesian PML region
 class PML
@@ -113,6 +116,8 @@ public:
    }
 };
 
+Mesh* LoadMeshNew(const std::string& path);
+
 void maxwell_solution(const Vector &x, vector<complex<double>> &Eval);
 
 void E_bdr_data_Re(const Vector &x, Vector &E);
@@ -164,7 +169,7 @@ int main(int argc, char *argv[])
    const char *mesh_file = nullptr;
    int order = 1;
    int ref_levels = 1;
-   int par_ref_levels = 2;
+   int par_ref_levels = 0;
    int iprob = 4;
    double freq = 5.0;
    bool herm_conv = true;
@@ -246,7 +251,8 @@ int main(int argc, char *argv[])
             break;
          default:
             exact_known = false;
-            mesh_file = "../data/inline-quad.mesh";
+            //mesh_file = "../data/inline-quad.mesh";
+            mesh_file = "../data/cube_comsol_rf1.mphtxt";
             break;
       }
    }
@@ -264,7 +270,8 @@ int main(int argc, char *argv[])
       args.PrintOptions(cout);
    }
 
-   Mesh * mesh = new Mesh(mesh_file, 1, 1);
+   //Mesh * mesh = new Mesh(mesh_file, 1, 1);
+   Mesh* mesh = LoadMeshNew(mesh_file);
    dim = mesh->Dimension();
 
    // Angular frequency
@@ -292,7 +299,7 @@ int main(int argc, char *argv[])
          length(0, 1) = 2.0;
          break;
       default:
-         length = 0.25;
+         length = 0.1;
          break;
    }
    PML * pml = new PML(mesh,length);
@@ -689,6 +696,48 @@ int main(int argc, char *argv[])
    delete pmesh;
    return 0;
 }
+
+Mesh* LoadMeshNew(const std::string& path)
+{
+    // Read the (serial) mesh from the given mesh file. Handle preparation for refinement and
+    // orientations here to avoid possible reorientations and reordering later on. MFEM
+    // supports a native mesh format (.mesh), VTK/VTU, Gmsh, as well as some others. We use
+    // built-in converters for the types we know, otherwise rely on MFEM to do the conversion
+    // or error out if not supported.
+    std::filesystem::path mfile(path);
+    if (mfile.extension() == ".mphtxt" || mfile.extension() == ".mphbin" ||
+        mfile.extension() == ".nas" || mfile.extension() == ".bdf")
+    {
+        // Put translated mesh in temporary string buffer.
+        std::stringstream fi(std::stringstream::in | std::stringstream::out);
+        // fi << std::fixed;
+        fi << std::scientific;
+        fi.precision(MSH_FLT_PRECISION);
+
+        Mesh* tempmesh = new Mesh();
+
+        if (mfile.extension() == ".mphtxt" || mfile.extension() == ".mphbin")
+        {
+            tempmesh->ConvertMeshComsol(path, fi);
+        }
+        else
+        {
+            tempmesh->ConvertMeshNastran(path, fi);
+        }
+
+        return new Mesh(fi, 1, 1, true);
+    }
+    // Otherwise, just rely on MFEM load the mesh.
+    named_ifgzstream fi(path);
+    if (!fi.good())
+    {
+        MFEM_ABORT("Unable to open mesh file \"" << path << "\"!");
+    }
+    Mesh* mesh = new Mesh(fi, 1, 1, true);
+    mesh->EnsureNodes();
+    return mesh;
+}
+
 
 void source(const Vector &x, Vector &f)
 {

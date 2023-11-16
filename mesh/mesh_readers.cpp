@@ -4311,12 +4311,15 @@ void Mesh::ConvertMeshComsol(const std::string &filename, std::ostream &buffer)
                                  "Unexpected element data size!");
                   }
 
-                  // Parse all element geometry tags (stored at beginning of element nodes). For
-                  // geometric entites in < 3D, the exported COMSOL tags are 0-based and need
+                  // Parse all element geometry tags (stored at beginning of element nodes).
+                  // For `sdim` mesh and geometric entites in < `sdim`, the exported COMSOL tags are 0-based and need
                   // correcting to 1-based for Gmsh.
+                  // 
                   int i = 0;
                   const int geom_start =
-                      (elem_type < 4 || (elem_type > 7 && elem_type < 11)) ? 1 : 0;
+                     (sdim==3) ? 
+                     ((elem_type < 4 || (elem_type > 7 && elem_type < 11)) ? 1 : 0) : 
+                     ((elem_type < 2) ? 1 : 0);
                   while (i < num_elem)
                   {
                      comsol::GetLineComsol(input, line);

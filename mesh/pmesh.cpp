@@ -6456,6 +6456,45 @@ void ParMesh::PrintVTU(std::string pathname,
    Mesh::PrintVTU(vtu_fname, format, high_order_output, compression_level, bdr);
 }
 
+int ParMesh::FindVertex(Vector& point, Array<int>& elem_ids,
+       Array<IntegrationPoint>& ips, bool warn,
+       InverseElementTransformation* inv_trans)
+{
+   const int dim = point.Size();
+   if (!dim) { return 0; }
+   MFEM_VERIFY(dim == spaceDim, "Invalid point coordinate");
+
+   const bool no_warn = false;
+   int elems_found_loc = Mesh::FindVertex(point, elem_ids, ips, no_warn);
+
+   // Prepare data for MPI communication
+   // Assuming 'elems_found_loc' contains the number of elements found on the local processor
+   // We need to gather this information across all processors
+   int num_procs, my_rank;
+   MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+
+   // Gather the number of elements found on each processor
+   Array<int> num_elems_found_global(num_procs);
+   MPI_Allgather(&elems_found_loc, 1, MPI_INT,
+               num_elems_found_global.GetData(), 1, MPI_INT, MPI_COMM_WORLD);
+
+   // Calculate the total number of elements found and allocate memory
+   int total_elems_found = 0;
+   for (int i = 0; i < num_procs; i++)
+   {
+      total_elems_found += num_elems_found_global[i];
+   }
+
+   // Handle warnings if no elements were found globally and 'warn' is true
+   if (warn && total_elems_found == 0)
+   {
+      MFEM_WARNING("Warning: Point not found in any elements.");
+   }
+
+   return total_elems_found;
+}
+
 int ParMesh::FindPoints(DenseMatrix& point_mat, Array<int>& elem_id,
                         Array<IntegrationPoint>& ip, bool warn,
                         InverseElementTransformation *inv_trans)

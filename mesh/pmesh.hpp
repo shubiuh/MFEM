@@ -661,6 +661,12 @@ public:
                   Array<IntegrationPoint>& ips, bool warn = true,
                   InverseElementTransformation *inv_trans = NULL) override;
 
+   /** @brief Find Vertex ID
+   */
+   int FindVertex(Vector& point_mat, Array<int>& elem_ids,
+       Array<IntegrationPoint>& ips, bool warn = true,
+       InverseElementTransformation* inv_trans = NULL) override;
+
    /// Debugging method
    void PrintSharedEntities(const std::string &fname_prefix) const;
 
