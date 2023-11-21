@@ -648,8 +648,9 @@ int main(int argc, char* argv[])
     if (!pa && mumps_solver)
     {
         HypreParMatrix *A = Ah.As<ComplexHypreParMatrix>()->GetSystemMatrix();
+        MFEM_WARNING("MUMPS solving...");
         MUMPSSolver mumps(A->GetComm());
-        mumps.SetPrintLevel(1);
+        mumps.SetPrintLevel(0);
         mumps.SetMatrixSymType(MUMPSSolver::MatType::UNSYMMETRIC);
         mumps.SetOperator(*A);
         mumps.Mult(B, U);
