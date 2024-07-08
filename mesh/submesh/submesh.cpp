@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
 //
@@ -31,7 +31,7 @@ SubMesh SubMesh::CreateFromBoundary(const Mesh &parent,
 SubMesh::SubMesh(const Mesh &parent, From from,
                  Array<int> attributes) : parent_(parent), from_(from), attributes_(attributes)
 {
-   if (Nonconforming())
+   if (parent.Nonconforming())
    {
       MFEM_ABORT("SubMesh does not support non-conforming meshes");
    }
@@ -65,7 +65,7 @@ SubMesh::SubMesh(const Mesh &parent, From from,
 
       for (int i = 0; i < NumOfBdrElements; i++)
       {
-         int pbeid = parent_face_to_be[parent_face_ids_[GetBdrFace(i)]];
+         int pbeid = parent_face_to_be[parent_face_ids_[GetBdrElementFaceIndex(i)]];
          if (pbeid != -1)
          {
             int attr = parent.GetBdrElement(pbeid)->GetAttribute();
@@ -117,7 +117,7 @@ SubMesh::SubMesh(const Mesh &parent, From from,
 
          for (int i = 0; i < NumOfBdrElements; i++)
          {
-            int pbeid = parent_face_to_be[parent_edge_ids_[GetBdrFace(i)]];
+            int pbeid = parent_face_to_be[parent_edge_ids_[GetBdrElementFaceIndex(i)]];
             if (pbeid != -1)
             {
                int attr = parent.GetBdrElement(pbeid)->GetAttribute();
@@ -192,8 +192,6 @@ SubMesh::SubMesh(const Mesh &parent, From from,
    SetAttributes();
    Finalize();
 }
-
-SubMesh::~SubMesh() {}
 
 void SubMesh::Transfer(const GridFunction &src, GridFunction &dst)
 {
