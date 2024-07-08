@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
 //
@@ -38,8 +38,8 @@ bool Mesh::remove_unused_vertices = true;
 
 void Mesh::ReadMFEMMesh(std::istream &input, int version, int &curved)
 {
-   // Read MFEM mesh v1.0 or v1.2 format
-   MFEM_VERIFY(version == 10 || version == 12,
+   // Read MFEM mesh v1.0, v1.2, or v1.3 format
+   MFEM_VERIFY(version == 10 || version == 12 || version == 13,
                "unknown MFEM mesh version");
 
    string ident;
@@ -62,6 +62,18 @@ void Mesh::ReadMFEMMesh(std::istream &input, int version, int &curved)
       elements[j] = ReadElement(input);
    }
 
+   if (version == 13)
+   {
+      skip_comment_lines(input, '#');
+      input >> ident; // 'attribute_sets'
+
+      MFEM_VERIFY(ident == "attribute_sets", "invalid mesh file");
+
+      attribute_sets.attr_sets.Load(input);
+      attribute_sets.attr_sets.SortAll();
+      attribute_sets.attr_sets.UniqueAll();
+   }
+
    skip_comment_lines(input, '#');
    input >> ident; // 'boundary'
 
@@ -71,6 +83,18 @@ void Mesh::ReadMFEMMesh(std::istream &input, int version, int &curved)
    for (int j = 0; j < NumOfBdrElements; j++)
    {
       boundary[j] = ReadElement(input);
+   }
+
+   if (version == 13)
+   {
+      skip_comment_lines(input, '#');
+      input >> ident; // 'bdr_attribute_sets'
+
+      MFEM_VERIFY(ident == "bdr_attribute_sets", "invalid mesh file");
+
+      bdr_attribute_sets.attr_sets.Load(input);
+      bdr_attribute_sets.attr_sets.SortAll();
+      bdr_attribute_sets.attr_sets.UniqueAll();
    }
 
    skip_comment_lines(input, '#');
@@ -267,7 +291,7 @@ void Mesh::ReadTrueGridMesh(std::istream &input)
    if (Dim == 2)
    {
       int vari;
-      double varf;
+      real_t varf;
 
       input >> vari >> NumOfVertices >> vari >> vari >> NumOfElements;
       input.getline(buf, buflen);
@@ -303,7 +327,7 @@ void Mesh::ReadTrueGridMesh(std::istream &input)
    else if (Dim == 3)
    {
       int vari;
-      double varf;
+      real_t varf;
       input >> vari >> NumOfVertices >> NumOfElements;
       input.getline(buf, buflen);
       input.getline(buf, buflen);
@@ -429,7 +453,7 @@ void Mesh::CreateVTKMesh(const Vector &points, const Array<int> &cell_data,
    spaceDim = 0;
    if (np > 0)
    {
-      double min_value, max_value;
+      real_t min_value, max_value;
       for (int d = 3; d > 0; --d)
       {
          min_value = max_value = points(3*0 + d-1);
@@ -1127,15 +1151,24 @@ void Mesh::ReadXML_VTKMesh(std::istream &input, int &curved, int &read_gf,
    }
    if (cells_xml == NULL) { MFEM_ABORT(erstr); }
 
-   // Read the element attributes, which are stored as CellData named "material"
+   // Read the element attributes, which are stored as CellData named either
+   // "material" or "attribute". We prioritize "material" over "attribute" for
+   // backwards compatibility.
    Array<int> cell_attributes;
+   bool found_attributes = false;
    for (const XMLElement *cell_data_xml = piece->FirstChildElement();
         cell_data_xml != NULL;
         cell_data_xml = cell_data_xml->NextSiblingElement())
    {
-      if (StringCompare(cell_data_xml->Name(), "CellData")
-          && StringCompare(cell_data_xml->Attribute("Scalars"), "material"))
+      const bool is_cell_data =
+         StringCompare(cell_data_xml->Name(), "CellData");
+      const bool is_material =
+         StringCompare(cell_data_xml->Attribute("Scalars"), "material");
+      const bool is_attribute =
+         StringCompare(cell_data_xml->Attribute("Scalars"), "attribute");
+      if (is_cell_data && (is_material || (is_attribute && !found_attributes)))
       {
+         found_attributes = true;
          const XMLElement *data_xml = cell_data_xml->FirstChildElement();
          if (data_xml != NULL && StringCompare(data_xml->Name(), "DataArray"))
          {
@@ -1250,6 +1283,7 @@ void Mesh::ReadVTKMesh(std::istream &input, int &curved, int &read_gf,
    // Read the cell materials
    // bool found_material = false;
    Array<int> cell_attributes;
+   bool found_attributes = false;
    while ((input.good()))
    {
       getline(input, buff);
@@ -1257,8 +1291,10 @@ void Mesh::ReadVTKMesh(std::istream &input, int &curved, int &read_gf,
       {
          break; // We have entered the POINT_DATA block. Quit.
       }
-      else if (buff.rfind("SCALARS material") == 0)
+      else if (buff.rfind("SCALARS material") == 0 ||
+               (buff.rfind("SCALARS attribute") == 0 && !found_attributes))
       {
+         found_attributes = true;
          getline(input, buff); // LOOKUP_TABLE default
          if (buff.rfind("LOOKUP_TABLE default") != 0)
          {
@@ -1280,9 +1316,10 @@ void Mesh::ReadVTKMesh(std::istream &input, int &curved, int &read_gf,
                  curved, read_gf, finalize_topo);
 } // end ReadVTKMesh
 
-void Mesh::ReadNURBSMesh(std::istream &input, int &curved, int &read_gf)
+void Mesh::ReadNURBSMesh(std::istream &input, int &curved, int &read_gf,
+                         bool spacing)
 {
-   NURBSext = new NURBSExtension(input);
+   NURBSext = new NURBSExtension(input, spacing);
 
    Dim              = NURBSext->Dimension();
    NumOfVertices    = NURBSext->GetNV();
@@ -1329,9 +1366,9 @@ void Mesh::ReadInlineMesh(std::istream &input, bool generate_edges)
    int nx = -1;
    int ny = -1;
    int nz = -1;
-   double sx = -1.0;
-   double sy = -1.0;
-   double sz = -1.0;
+   real_t sx = -1.0;
+   real_t sy = -1.0;
+   real_t sz = -1.0;
    Element::Type type = Element::POINT;
 
    while (true)
@@ -1484,7 +1521,7 @@ void Mesh::ReadInlineMesh(std::istream &input, bool generate_edges)
 void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
 {
    string buff;
-   double version;
+   real_t version;
    int binary, dsize;
    input >> version >> binary >> dsize;
    if (version < 2.2)
@@ -1512,6 +1549,12 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
    // starting from 1, not 0)
    map<int, int> vertices_map;
 
+   // A map containing names of physical curves, surfaces, and volumes.
+   // The first index is the dimension of the physical manifold, the second
+   // index is the element attribute number of the set, and the string is
+   // the assigned name.
+   map<int,map<int,std::string> > phys_names_by_dim;
+
    // Gmsh always outputs coordinates in 3D, but MFEM distinguishes between the
    // mesh element dimension (Dim) and the dimension of the space in which the
    // mesh is embedded (spaceDim). For example, a 2D MFEM mesh has Dim = 2 and
@@ -1522,9 +1565,9 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
    // is non-trivial. Note that with these assumptions a 2D mesh parallel to the
    // yz plane will be considered a surface mesh embedded in 3D whereas the same
    // 2D mesh parallel to the xy plane will be considered a 2D mesh.
-   double bb_tol = 1e-14;
-   double bb_min[3];
-   double bb_max[3];
+   real_t bb_tol = 1e-14;
+   real_t bb_min[3];
+   real_t bb_max[3];
 
    // Mesh order
    int mesh_order = 1;
@@ -1546,7 +1589,7 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
          vertices.SetSize(NumOfVertices);
          int serial_number;
          const int gmsh_dim = 3; // Gmsh always outputs 3 coordinates
-         double coord[gmsh_dim];
+         real_t coord[gmsh_dim];
          for (int ver = 0; ver < NumOfVertices; ++ver)
          {
             if (binary)
@@ -1573,7 +1616,7 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
                             std::max(bb_max[ci], coord[ci]);
             }
          }
-         double bb_size = std::max(bb_max[0] - bb_min[0],
+         real_t bb_size = std::max(bb_max[0] - bb_min[0],
                                    std::max(bb_max[1] - bb_min[1],
                                             bb_max[2] - bb_min[2]));
          spaceDim = 1;
@@ -2575,7 +2618,7 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
 
                for (int v = 0; v<nv; v++)
                {
-                  double * c = GetVertex((*ho_verts)[vm[v]]);
+                  real_t * c = GetVertex((*ho_verts)[vm[v]]);
                   for (int d=0; d<spaceDim; d++)
                   {
                      Nodes_gf(spaceDim * (o + v) + d) = c[d];
@@ -2636,6 +2679,38 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
          MFEM_CONTRACT_VAR(elem_domain);
 
       } // section '$Elements'
+      else if (buff == "$PhysicalNames") // Named element sets
+      {
+         int num_names = 0;
+         int mdim,num;
+         string name;
+         input >> num_names;
+         for (int i=0; i < num_names; i++)
+         {
+            input >> mdim >> num;
+            getline(input, name);
+
+            // Trim leading white space
+            while (!name.empty() &&
+                   (*name.begin() == ' ' || *name.begin() == '\t'))
+            { name.erase(0,1);}
+
+            // Trim trailing white space
+            while (!name.empty() &&
+                   (*name.rbegin() == ' ' || *name.rbegin() == '\t' ||
+                    *name.rbegin() == '\n' || *name.rbegin() == '\r'))
+            { name.resize(name.length()-1);}
+
+            // Remove enclosing quotes
+            if ( (*name.begin() == '"' || *name.begin() == '\'') &&
+                 (*name.rbegin() == '"' || *name.rbegin() == '\''))
+            {
+               name = name.substr(1,name.length()-2);
+            }
+
+            phys_names_by_dim[mdim][num] = name;
+         }
+      }
       else if (buff == "$Periodic") // Reading master/slave node pairs
       {
          curved = 1;
@@ -2734,6 +2809,30 @@ void Mesh::ReadGmshMesh(std::istream &input, int &curved, int &read_gf)
          }
       }
    } // we reach the end of the file
+
+   // Process set names
+   if (phys_names_by_dim.size() > 0)
+   {
+      // Process boundary attribute set names
+      for (auto const &bdr_attr : phys_names_by_dim[Dim-1])
+      {
+         if (!bdr_attribute_sets.AttributeSetExists(bdr_attr.second))
+         {
+            bdr_attribute_sets.CreateAttributeSet(bdr_attr.second);
+         }
+         bdr_attribute_sets.AddToAttributeSet(bdr_attr.second, bdr_attr.first);
+      }
+
+      // Process element attribute set names
+      for (auto const &attr : phys_names_by_dim[Dim])
+      {
+         if (!attribute_sets.AttributeSetExists(attr.second))
+         {
+            attribute_sets.CreateAttributeSet(attr.second);
+         }
+         attribute_sets.AddToAttributeSet(attr.second, attr.first);
+      }
+   }
 
    this->RemoveUnusedVertices();
    if (periodic)
@@ -3037,9 +3136,9 @@ static void ReadCubitDimensions(const int netcdf_descriptor,
 
 static void ReadCubitBoundaries(const int netcdf_descriptor,
                                 const int num_boundaries,
-                                std::vector<size_t> &num_boundary_elements,
-                                int **boundary_elements,
-                                int **boundary_sides)
+                                vector<size_t> &num_boundary_elements,
+                                vector<vector<int>> &boundary_elements,
+                                vector<vector<int>> &boundary_sides)
 {
    int netcdf_status, variable_id;
 
@@ -3062,15 +3161,15 @@ static void ReadCubitBoundaries(const int netcdf_descriptor,
       num_boundary_elements[iboundary] = num_sides;
 
       // 2. Extract elements and sides on each boundary.
-      boundary_elements[iboundary] = new int[num_sides]; // (element, face) pairs.
-      boundary_sides[iboundary] = new int[num_sides];
+      boundary_elements[iboundary].resize(num_sides); // (element, face) pairs.
+      boundary_sides[iboundary].resize(num_sides);
 
       //
       snprintf(string_buffer, buffer_size, "elem_ss%d", iboundary + 1);
 
       netcdf_status = nc_inq_varid(netcdf_descriptor, string_buffer, &variable_id);
       netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id,
-                                     boundary_elements[iboundary]);
+                                     boundary_elements[iboundary].data());
 
       if (netcdf_status != NC_NOERR) { break; }
 
@@ -3079,7 +3178,7 @@ static void ReadCubitBoundaries(const int netcdf_descriptor,
 
       netcdf_status = nc_inq_varid(netcdf_descriptor, string_buffer, &variable_id);
       netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id,
-                                     boundary_sides[iboundary]);
+                                     boundary_sides[iboundary].data());
 
       if (netcdf_status != NC_NOERR) { break; }
    }
@@ -3090,7 +3189,8 @@ static void ReadCubitBoundaries(const int netcdf_descriptor,
 
 static void ReadCubitElementBlocks(const int netcdf_descriptor,
                                    const int num_element_blocks, const int num_nodes_per_element,
-                                   const std::vector<std::size_t> & num_elements_for_block, int **block_elements)
+                                   const vector<size_t> &num_elements_for_block,
+                                   vector<vector<int>> &block_elements)
 {
    int netcdf_status, variable_id;
 
@@ -3099,8 +3199,8 @@ static void ReadCubitElementBlocks(const int netcdf_descriptor,
 
    for (int iblock = 0; iblock < num_element_blocks; iblock++)
    {
-      block_elements[iblock] = new int[num_elements_for_block[iblock] *
-                                       num_nodes_per_element];
+      block_elements[iblock].resize(
+         num_elements_for_block[iblock]*num_nodes_per_element);
 
       // Write variable name to buffer.
       snprintf(string_buffer, buffer_size, "connect%d", iblock + 1);
@@ -3108,7 +3208,7 @@ static void ReadCubitElementBlocks(const int netcdf_descriptor,
       // Get variable ID and then set all nodes of element in block.
       netcdf_status = nc_inq_varid(netcdf_descriptor, string_buffer, &variable_id);
       netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id,
-                                     block_elements[iblock]);
+                                     block_elements[iblock].data());
 
       if (netcdf_status != NC_NOERR) { break; }
    }
@@ -3339,10 +3439,147 @@ static int GetCubitBlockIndexForElement(const int global_element_index,
    return iblock;
 }
 
+mfem::Element *NewElement(Mesh &mesh, Geometry::Type geom, const int *vertices,
+                          const int attribute)
+{
+   Element *new_element = mesh.NewElement(geom);
+   new_element->SetVertices(vertices);
+   new_element->SetAttribute(attribute);
+   return new_element;
+}
+
+/// @brief Returns a pointer to a new mfem::Element based on the provided cubit
+/// element type. This is used to create the mesh elements from a Genesis file.
+mfem::Element *CreateCubitElement(Mesh &mesh,
+                                  const int cubit_element_type,
+                                  const int *vertex_ids,
+                                  const int block_id)
+{
+   switch (cubit_element_type)
+   {
+      case ELEMENT_TRI3:
+      case ELEMENT_TRI6:
+         return NewElement(mesh, Geometry::TRIANGLE, vertex_ids, block_id);
+      case ELEMENT_QUAD4:
+      case ELEMENT_QUAD9:
+         return NewElement(mesh, Geometry::SQUARE, vertex_ids, block_id);
+      case ELEMENT_TET4:
+      case ELEMENT_TET10:
+         return NewElement(mesh, Geometry::TETRAHEDRON, vertex_ids, block_id);
+      case ELEMENT_HEX8:
+      case ELEMENT_HEX27:
+         return NewElement(mesh, Geometry::CUBE, vertex_ids, block_id);
+      default:
+         MFEM_ABORT("Unsupported cubit element type encountered.");
+         return nullptr;
+   }
+}
+
+/// @brief Returns a pointer to a new mfem::Element based on the provided cubit
+/// face type. This is used to create the boundary elements from a Genesis file.
+mfem::Element *CreateCubitBoundaryElement(Mesh &mesh,
+                                          const int cubit_face_type,
+                                          const int *vertex_ids,
+                                          const int sideset_id)
+{
+   switch (cubit_face_type)
+   {
+      case FACE_EDGE2:
+      case FACE_EDGE3:
+         return NewElement(mesh, Geometry::SEGMENT, vertex_ids, sideset_id);
+      case FACE_TRI3:
+      case FACE_TRI6:
+         return NewElement(mesh, Geometry::TRIANGLE, vertex_ids, sideset_id);
+      case FACE_QUAD4:
+      case FACE_QUAD9:
+         return NewElement(mesh, Geometry::SQUARE, vertex_ids, sideset_id);
+      default:
+         MFEM_ABORT("Unsupported cubit face type encountered.");
+         return nullptr;
+   }
+}
+
+/// @brief The final step in constructing the mesh from a Genesis file. This is
+/// only called if the mesh order == 2 (determined internally from the cubit
+/// element type).
+void FinalizeCubitSecondOrderMesh(Mesh &mesh,
+                                  const int cubit_element_type,
+                                  const int num_element_blocks,
+                                  const int num_nodes_per_element,
+                                  const int *start_of_block,
+                                  const double *coordx,
+                                  const double *coordy,
+                                  const double *coordz,
+                                  const vector<vector<int>> &element_blocks)
+{
+   int *mfem_to_genesis_map = nullptr;
+
+   switch (cubit_element_type)
+   {
+      case ELEMENT_TRI6:
+         mfem_to_genesis_map = (int *) mfem_to_genesis_tri6;
+         break;
+      case ELEMENT_QUAD9:
+         mfem_to_genesis_map = (int *) mfem_to_genesis_quad9;
+         break;
+      case ELEMENT_TET10:
+         mfem_to_genesis_map = (int *) mfem_to_genesis_tet10;
+         break;
+      case ELEMENT_HEX27:
+         mfem_to_genesis_map = (int *) mfem_to_genesis_hex27;
+         break;
+      default:
+         MFEM_ABORT("Something went wrong. Linear elements detected when order is 2.");
+   }
+
+   mesh.FinalizeTopology();
+
+   // Define quadratic FE space.
+   const int Dim = mesh.Dimension();
+   FiniteElementCollection *fec = new H1_FECollection(2,3);
+   FiniteElementSpace *fes = new FiniteElementSpace(&mesh, fec, Dim,
+                                                    Ordering::byVDIM);
+   GridFunction *Nodes = new GridFunction(fes);
+   Nodes->MakeOwner(fec); // Nodes will destroy 'fec' and 'fes'
+   mesh.SetNodalGridFunction(Nodes, true);
+
+   for (int ielement = 0; ielement < mesh.GetNE(); ielement++)
+   {
+      Array<int> dofs;
+      fes->GetElementDofs(ielement, dofs);
+
+      Array<int> vdofs = dofs;   // Deep copy.
+      fes->DofsToVDofs(vdofs);
+
+      // Find block that element is part of.
+      const int iblock = GetCubitBlockIndexForElement(ielement,
+                                                      num_element_blocks,
+                                                      start_of_block);
+
+      // Find element offset in block.
+      const int element_offset = ielement - start_of_block[iblock];
+      const int node_offset    = element_offset * num_nodes_per_element;
+
+      for (int jnode = 0; jnode < dofs.Size(); jnode++)
+      {
+         const int node_index = element_blocks[iblock][node_offset +
+                                                       mfem_to_genesis_map[jnode] - 1] - 1;
+
+         (*Nodes)(vdofs[jnode])     = coordx[node_index];
+         (*Nodes)(vdofs[jnode] + 1) = coordy[node_index];
+
+         if (Dim == 3)
+         {
+            (*Nodes)(vdofs[jnode] + 2) = coordz[node_index];
+         }
+      }
+   }
+}
+
 }  // namespace cubit.
 
 
-void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
+void Mesh::ReadCubit(const std::string &filename, int &curved, int &read_gf)
 {
    using namespace cubit;
 
@@ -3352,14 +3589,10 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    // Setup buffer used to write variable names to.
    int variable_id;
 
-   const int buffer_size = NC_MAX_NAME + 1; // NB: Add 1 for '\0'.
-
-   char variable_name_buffer[buffer_size];
-
    // Open the file.
    int netcdf_status, netcdf_descriptor;
 
-   netcdf_status = nc_open(filename, NC_NOWRITE, &netcdf_descriptor);
+   netcdf_status = nc_open(filename.c_str(), NC_NOWRITE, &netcdf_descriptor);
    if (netcdf_status != NC_NOERR) { HandleNetCDFError(netcdf_status); }
 
    // Read important dimensions from file.
@@ -3399,58 +3632,61 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    SetCubitFaceInfo(cubit_face_type, num_face_nodes, num_face_linear_nodes);
 
    // Read the (element, corresponding side) on each of the boundaries.
-   std::vector<size_t> num_boundary_elements(num_boundaries);
+   vector<size_t> num_boundary_elements(num_boundaries);
 
-   int **boundary_elements = new int*[num_boundaries];
-   int **boundary_sides    = new int*[num_boundaries];
+   vector<vector<int>> boundary_elements(num_boundaries);
+   vector<vector<int>> boundary_sides(num_boundaries);
 
    ReadCubitBoundaries(netcdf_descriptor, num_boundaries, num_boundary_elements,
                        boundary_elements, boundary_sides);
 
    // Read the boundary ids.
-   int *boundary_ids = nullptr;
+   vector<int> boundary_ids;
 
    if (num_boundaries > 0)
    {
-      boundary_ids = new int[num_boundaries];
+      boundary_ids.resize(num_boundaries);
 
       netcdf_status = nc_inq_varid(netcdf_descriptor, "ss_prop1", &variable_id);
-      netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id, boundary_ids);
+      netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id,
+                                     boundary_ids.data());
 
       if (netcdf_status != NC_NOERR) { HandleNetCDFError(netcdf_status); }
    }
 
    // Read the xyz coordinates for each node.
-   double *coordx = new double[num_nodes];
-   double *coordy = new double[num_nodes];
-   double *coordz = (num_dimensions == 3 ? new double[num_nodes] : nullptr);
+   vector<double> coordx(num_nodes);
+   vector<double> coordy(num_nodes);
+   vector<double> coordz(num_dimensions == 3 ? num_nodes : 0);
 
-   ReadCubitNodeCoordinates(netcdf_descriptor, coordx, coordy, coordz);
+   ReadCubitNodeCoordinates(netcdf_descriptor, coordx.data(), coordy.data(),
+                            coordz.data());
 
    // Read the elements that make-up each block.
-   int **block_elements = new int*[num_element_blocks];
+   vector<vector<int>> block_elements(num_element_blocks);
 
    ReadCubitElementBlocks(netcdf_descriptor, num_element_blocks,
                           num_nodes_per_element, num_elements_for_block,
                           block_elements);
 
    // Read the block IDs.
-   int *block_ids = new int[num_element_blocks];
+   vector<int> block_ids(num_element_blocks);
 
    {
       netcdf_status = nc_inq_varid(netcdf_descriptor, "eb_prop1", &variable_id);
-      netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id, block_ids);
+      netcdf_status = nc_get_var_int(netcdf_descriptor, variable_id,
+                                     block_ids.data());
 
       if (netcdf_status != NC_NOERR) { HandleNetCDFError(netcdf_status); }
    }
 
    // Create an array holding the index of the first element in each block. This
    // will allow the determination of the block that each element is in.
-   int *start_of_block = new int[num_element_blocks + 1];
+   vector<int> start_of_block(num_element_blocks + 1);
 
    start_of_block[0] = 0;
 
-   for (int iblock = 1; iblock < num_element_blocks + 1; iblock++)
+   for (size_t iblock = 1; iblock < num_element_blocks + 1; iblock++)
    {
       start_of_block[iblock] = start_of_block[iblock - 1] +
                                num_elements_for_block[iblock - 1];
@@ -3459,15 +3695,15 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    // Iterate over each boundary. For each boundary, we run through the
    // (element, side) pairs and extract the face nodes of each element on the
    // corresponding side.
-   int **boundary_nodes = new int*[num_boundaries];
+   vector<vector<int>> boundary_nodes(num_boundaries);
 
    // Iterate over boundaries.
-   for (int iboundary = 0; iboundary < num_boundaries; iboundary++)
+   for (size_t iboundary = 0; iboundary < num_boundaries; iboundary++)
    {
       const int num_elements_on_boundary = num_boundary_elements[iboundary];
       const int num_nodes_on_boundary = num_elements_on_boundary * num_face_nodes;
 
-      boundary_nodes[iboundary] = new int[num_nodes_on_boundary];
+      boundary_nodes[iboundary].resize(num_nodes_on_boundary);
 
       // Iterate over (element, side) pairs on boundary.
       for (int jelement = 0; jelement < num_elements_on_boundary; jelement++)
@@ -3480,7 +3716,7 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
          // Determine the block the element is part-of.
          const int iblock = GetCubitBlockIndexForElement(element_global_index,
                                                          num_element_blocks,
-                                                         start_of_block);
+                                                         start_of_block.data());
 
          const int element_block_offset = element_global_index - start_of_block[iblock];
          const int node_block_offset    = element_block_offset * num_nodes_per_element;
@@ -3546,13 +3782,13 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    }
 
    // We need another node ID mapping since MFEM needs contiguous vertex ids.
-   std::vector<int> unique_vertex_ids;
+   vector<int> unique_vertex_ids;
 
-   for (int iblock = 0; iblock < num_element_blocks; iblock++)
+   for (size_t iblock = 0; iblock < num_element_blocks; iblock++)
    {
-      const int *nodes_in_block = block_elements[iblock];
+      const vector<int> &nodes_in_block = block_elements[iblock];
 
-      for (int jelement = 0; jelement < num_elements_for_block[iblock]; jelement++)
+      for (size_t jelement = 0; jelement < num_elements_for_block[iblock]; jelement++)
       {
          const int element_block_offset = jelement * num_nodes_per_element;
 
@@ -3565,9 +3801,8 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
 
    // Sort and only retain unique node IDs.
    std::sort(unique_vertex_ids.begin(), unique_vertex_ids.end());
-   std::vector<int>::iterator new_end;
 
-   new_end = std::unique(unique_vertex_ids.begin(), unique_vertex_ids.end());
+   auto new_end = std::unique(unique_vertex_ids.begin(), unique_vertex_ids.end());
    unique_vertex_ids.resize(std::distance(unique_vertex_ids.begin(), new_end));
 
    // unique_vertex_ids now contains a 1-based sorted list of node IDs for each
@@ -3576,7 +3811,7 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    // ie. [1, 4, 5, 8, 9] --> [1, 2, 3, 4, 5].
    std::map<int,int> cubit_to_mfem_vertex_map;
 
-   for (int ivertex = 0; ivertex < unique_vertex_ids.size(); ivertex++)
+   for (size_t ivertex = 0; ivertex < unique_vertex_ids.size(); ivertex++)
    {
       const int key     = unique_vertex_ids[ivertex];
       const int value   = ivertex + 1;
@@ -3609,18 +3844,18 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    NumOfElements = num_elements;
    elements.SetSize(num_elements);
 
-   int renumbered_vertex_ids[max(num_element_linear_nodes, num_face_linear_nodes)];
+   std::vector<int> renumbered_vertex_ids(max(num_element_linear_nodes,
+                                              num_face_linear_nodes));
 
    int element_counter = 0;
 
    // Iterate over blocks.
-   for (int iblock = 0; iblock < num_element_blocks; iblock++)
+   for (size_t iblock = 0; iblock < num_element_blocks; iblock++)
    {
-      const int * nodes_ids_for_block = block_elements[iblock];
+      const vector<int> &nodes_ids_for_block = block_elements[iblock];
 
       // Iterate over elements in block.
-      for (int jelement = 0; jelement < num_elements_for_block[iblock];
-           jelement++)
+      for (size_t jelement = 0; jelement < num_elements_for_block[iblock]; jelement++)
       {
          // Iterate over linear nodes in block.
          for (int knode = 0; knode < num_element_linear_nodes; knode++)
@@ -3633,8 +3868,8 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
          }
 
          // Create element.
-         elements[element_counter++] = CreateCubitElement(cubit_element_type,
-                                                          renumbered_vertex_ids,
+         elements[element_counter++] = CreateCubitElement(*this, cubit_element_type,
+                                                          renumbered_vertex_ids.data(),
                                                           block_ids[iblock]);
       }
    }
@@ -3643,7 +3878,7 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    // Load up the boundary elements.
    //
    NumOfBdrElements = 0;
-   for (int iboundary = 0; iboundary < num_boundaries; iboundary++)
+   for (size_t iboundary = 0; iboundary < num_boundaries; iboundary++)
    {
       NumOfBdrElements += num_boundary_elements[iboundary];
    }
@@ -3653,12 +3888,13 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    int boundary_counter = 0;
 
    // Iterate over boundaries.
-   for (int iboundary = 0; iboundary < num_boundaries; iboundary++)
+   for (size_t iboundary = 0; iboundary < num_boundaries; iboundary++)
    {
-      const int *nodes_on_boundary = boundary_nodes[iboundary];
+      const vector<int> &nodes_on_boundary = boundary_nodes[iboundary];
 
       // Iterate over elements on boundary.
-      for (int jelement = 0; jelement < num_boundary_elements[iboundary]; jelement++)
+      for (size_t jelement = 0; jelement < num_boundary_elements[iboundary];
+           jelement++)
       {
          // Iterate over element's face linear nodes.
          for (int knode = 0; knode < num_face_linear_nodes; knode++)
@@ -3670,8 +3906,9 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
          }
 
          // Create boundary element.
-         boundary[boundary_counter++] = CreateCubitBoundaryElement(cubit_face_type,
-                                                                   renumbered_vertex_ids,
+         boundary[boundary_counter++] = CreateCubitBoundaryElement(*this,
+                                                                   cubit_face_type,
+                                                                   renumbered_vertex_ids.data(),
                                                                    boundary_ids[iboundary]);
       }
    }
@@ -3683,221 +3920,1142 @@ void Mesh::ReadCubit(const char *filename, int &curved, int &read_gf)
    {
       curved = 1;
 
-      FinalizeCubitSecondOrderMesh(cubit_element_type, num_element_blocks,
-                                   num_nodes_per_element, start_of_block, coordx, coordy, coordz,
-                                   (const int **)block_elements);
+      FinalizeCubitSecondOrderMesh(*this,
+                                   cubit_element_type,
+                                   num_element_blocks,
+                                   num_nodes_per_element,
+                                   start_of_block.data(),
+                                   coordx.data(),
+                                   coordy.data(),
+                                   coordz.data(),
+                                   block_elements);
    }
 
    // Clean up all netcdf stuff.
    nc_close(netcdf_descriptor);
-
-   for (int iboundary = 0; iboundary < num_boundaries; iboundary++)
-   {
-      delete [] boundary_elements[iboundary];
-      delete [] boundary_sides[iboundary];
-      delete [] boundary_nodes[iboundary];
-   }
-
-   delete [] boundary_elements;
-   delete [] boundary_sides;
-   delete [] boundary_nodes;
-
-   delete [] coordx;
-   delete [] coordy;
-   delete [] coordz;
-
-   for (int iblock = 0; iblock < num_element_blocks; iblock++)
-   {
-      delete [] block_elements[iblock];
-   }
-
-   delete [] block_elements;
-   delete [] start_of_block;
-
-   delete [] block_ids;
-   delete [] boundary_ids;
-}
-
-
-void Mesh::FinalizeCubitSecondOrderMesh(const int cubit_element_type,
-                                        const int num_element_blocks,
-                                        const int num_nodes_per_element,
-                                        const int *start_of_block,
-                                        const double *coordx,
-                                        const double *coordy,
-                                        const double *coordz,
-                                        const int **element_blocks)
-{
-   using namespace cubit;
-
-   int *mfem_to_genesis_map = nullptr;
-
-   switch (cubit_element_type)
-   {
-      case ELEMENT_TRI6:
-      {
-         mfem_to_genesis_map = (int *) mfem_to_genesis_tri6;
-         break;
-      }
-      case ELEMENT_QUAD9:
-      {
-         mfem_to_genesis_map = (int *) mfem_to_genesis_quad9;
-         break;
-      }
-      case ELEMENT_TET10:
-      {
-         mfem_to_genesis_map = (int *) mfem_to_genesis_tet10;
-         break;
-      }
-      case ELEMENT_HEX27:
-      {
-         mfem_to_genesis_map = (int *) mfem_to_genesis_hex27;
-         break;
-      }
-      case ELEMENT_TRI3:
-      case ELEMENT_QUAD4:
-      case ELEMENT_TET4:
-      case ELEMENT_HEX8:
-      default:
-      {
-         MFEM_ABORT("Something went wrong. Linear elements detected when order is 2.");
-         break;
-      }
-   }
-
-   FinalizeTopology();
-
-   // Define quadratic FE space.
-   FiniteElementCollection *fec = new H1_FECollection(2,3);
-   FiniteElementSpace *fes = new FiniteElementSpace(this, fec, Dim,
-                                                    Ordering::byVDIM);
-   Nodes = new GridFunction(fes);
-   Nodes->MakeOwner(fec); // Nodes will destroy 'fec' and 'fes'
-   own_nodes = 1;
-
-   for (int ielement = 0; ielement < NumOfElements; ielement++)
-   {
-      Array<int> dofs;
-      fes->GetElementDofs(ielement, dofs);
-
-      Array<int> vdofs = dofs;   // Deep copy.
-      fes->DofsToVDofs(vdofs);
-
-      // Find block that element is part of.
-      const int iblock = GetCubitBlockIndexForElement(ielement,
-                                                      num_element_blocks,
-                                                      start_of_block);
-
-      // Find element offset in block.
-      const int element_offset = ielement - start_of_block[iblock];
-      const int node_offset    = element_offset * num_nodes_per_element;
-
-      for (int jnode = 0; jnode < dofs.Size(); jnode++)
-      {
-         const int node_index = element_blocks[iblock][node_offset +
-                                                       mfem_to_genesis_map[jnode] - 1] - 1;
-
-         (*Nodes)(vdofs[jnode])     = coordx[node_index];
-         (*Nodes)(vdofs[jnode] + 1) = coordy[node_index];
-
-         if (Dim == 3)
-         {
-            (*Nodes)(vdofs[jnode] + 2) = coordz[node_index];
-         }
-      }
-   }
-}
-
-
-mfem::Element *Mesh::CreateCubitElement(const int cubit_element_type,
-                                        const int *vertex_ids,
-                                        const int block_id)
-{
-   using namespace cubit;
-
-   mfem::Element *new_element = nullptr;
-
-   switch (cubit_element_type)
-   {
-      case ELEMENT_TRI3:
-      case ELEMENT_TRI6:
-      {
-         new_element = new Triangle(vertex_ids, block_id);
-         break;
-      }
-      case ELEMENT_QUAD4:
-      case ELEMENT_QUAD9:
-      {
-         new_element = new Quadrilateral(vertex_ids, block_id);
-         break;
-      }
-      case ELEMENT_TET4:
-      case ELEMENT_TET10:
-      {
-#ifdef MFEM_USE_MEMALLOC
-         new_element = TetMemory.Alloc();
-         new_element->SetVertices(vertex_ids);
-         new_element->SetAttribute(block_id);
-#else
-         new_element = new Tetrahedron(vertex_ids, block_id);
-#endif
-         break;
-      }
-      case ELEMENT_HEX8:
-      case ELEMENT_HEX27:
-      {
-         new_element = new Hexahedron(vertex_ids, block_id);
-         break;
-      }
-      default:
-      {
-         MFEM_ABORT("Unsupported cubit element type encountered.");
-         break;
-      }
-   }
-
-   return new_element;
-}
-
-
-mfem::Element *Mesh::CreateCubitBoundaryElement(const int cubit_face_type,
-                                                const int *vertex_ids,
-                                                const int sideset_id) const
-{
-   using namespace cubit;
-
-   mfem::Element *new_element = nullptr;
-
-   switch (cubit_face_type)
-   {
-      case FACE_EDGE2:
-      case FACE_EDGE3:
-      {
-         new_element = new Segment(vertex_ids, sideset_id);
-         break;
-      }
-      case FACE_TRI3:
-      case FACE_TRI6:
-      {
-         new_element = new Triangle(vertex_ids, sideset_id);
-         break;
-      }
-      case FACE_QUAD4:
-      case FACE_QUAD9:
-      {
-         new_element = new Quadrilateral(vertex_ids, sideset_id);
-         break;
-      }
-      default:
-      {
-         MFEM_ABORT("Unsupported cubit face type encountered.");
-         break;
-      }
-   }
-
-   return new_element;
 }
 
 #endif // #ifdef MFEM_USE_NETCDF
+
+//
+// Functions for mesh format conversion (COMSOL) to Gmsh format, which is supported by MFEM. In both
+// cases, the user should configure the buffer for the desired floating point
+// format/precision for writing node coordinates.
+//
+namespace comsol
+{
+   static int ElemTypeComsol(const std::string &type)
+   {
+       if (!type.compare("edg")) // 3-node triangle
+       {
+           return 1;
+       }
+      if (!type.compare("tri")) // 3-node triangle
+      {
+         return 2;
+      }
+      if (!type.compare("quad")) // 4-node quadrangle
+      {
+         return 3;
+      }
+      if (!type.compare("tet")) // 4-node tetrahedron
+      {
+         return 4;
+      }
+      if (!type.compare("hex")) // 8-node hexahedron
+      {
+         return 5;
+      }
+      if (!type.compare("prism")) // 6-node prism
+      {
+         return 6;
+      }
+      if (!type.compare("pyr")) // 5-node pyramid
+      {
+         return 7;
+      }
+      if (!type.compare("tri2")) // 6-node triangle
+      {
+         return 9;
+      }
+      if (!type.compare("quad2")) // 9-node quadrangle
+      {
+         return 10;
+      }
+      if (!type.compare("tet2")) // 10-node tetrahedron
+      {
+         return 11;
+      }
+      if (!type.compare("hex2")) // 27-node hexahedron
+      {
+         return 12;
+      }
+      if (!type.compare("prism2")) // 18-node prism
+      {
+         return 13;
+      }
+      if (!type.compare("pyr2")) // 14-node pyramid
+      {
+         return 14;
+      }
+      return 0; // Skip this element type
+   }
+
+   static int ElemTypeNastran(const std::string &type)
+   {
+      // Returns only the low-order type for a given keyword.
+      if (!type.compare(0, 5, "CTRIA"))
+      {
+         return 2;
+      }
+      if (!type.compare(0, 5, "CQUAD"))
+      {
+         return 3;
+      }
+      if (!type.compare(0, 6, "CTETRA"))
+      {
+         return 4;
+      }
+      if (!type.compare(0, 5, "CHEXA"))
+      {
+         return 5;
+      }
+      if (!type.compare(0, 6, "CPENTA"))
+      {
+         return 6;
+      }
+      if (!type.compare(0, 6, "CPYRAM"))
+      {
+         return 7;
+      }
+      return 0; // Skip this element type
+   }
+
+   static int HOElemTypeNastran(const int lo_type, const int num_nodes)
+   {
+      // Get high-order element type for corresponding low-order type.
+      if (lo_type == 2 && num_nodes > 3)
+      {
+         MFEM_VERIFY(num_nodes == 6, "Invalid high-order Nastran element!");
+         return 9;
+      }
+      if (lo_type == 3)
+      {
+         if (num_nodes == 9)
+         {
+            return 10;
+         }
+         if (num_nodes == 8)
+         {
+            return 16;
+         }
+         MFEM_VERIFY(num_nodes == 4, "Invalid high-order Nastran element!");
+         return 3;
+      }
+      if (lo_type == 4 && num_nodes > 4)
+      {
+         MFEM_VERIFY(num_nodes == 10, "Invalid high-order Nastran element!");
+         return 11;
+      }
+      if (lo_type == 5 && num_nodes > 8)
+      {
+         MFEM_VERIFY(num_nodes == 20, "Invalid high-order Nastran element!");
+         return 17;
+      }
+      if (lo_type == 6 && num_nodes > 6)
+      {
+         MFEM_VERIFY(num_nodes == 15, "Invalid high-order Nastran element!");
+         return 18;
+      }
+      if (lo_type == 7 && num_nodes > 5)
+      {
+         MFEM_VERIFY(num_nodes == 13, "Invalid high-order Nastran element!");
+         return 19;
+      }
+      return lo_type;
+   }
+
+   static const int ElemNumNodes[] = {2, // 2-node edge
+                                      3, 4, 4, 8, 6, 5,
+                                      3, // 3-node edge
+                                      6, 9, 10, 27, 18, 14,
+                                      1, // 1-node node
+                                      8, 20, 15, 13};
+
+   // From COMSOL or Nastran to Gmsh ordering. See:
+   //   - https://gmsh.info/doc/texinfo/gmsh.html#Node-ordering
+   //   - https://doc.comsol.com/5.5/doc/com.comsol.help.comsol/comsol_api_mesh.40.33.html
+   //   - https://tinyurl.com/4d32zxtn
+   static const int SkipElem[] = {-1};
+   static const int Msh3[] = {0, 1, 2};
+   static const int Msh4[] = {0, 1, 2, 3};
+   static const int Msh5[] = {0, 1, 2, 3, 4};
+   static const int Msh6[] = {0, 1, 2, 3, 4, 5};
+   static const int Msh8[] = {0, 1, 2, 3, 4, 5, 6, 7};
+   static const int Msh9[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+
+   static const int MphPt[] = { 0 };
+   static const int MphEdg2[] = { 0, 1 };
+   static const int MphEdg3[] = { 0, 2, 1 };
+   static const int MphQuad4[] = {0, 1, 3, 2};
+   static const int MphHex8[] = {0, 1, 3, 2, 4, 5, 7, 6};
+   static const int MphPyr5[] = {0, 1, 3, 2, 4};
+   static const int MphTri6[] = {0, 1, 2, 3, 5, 4};
+   static const int MphQuad9[] = {0, 1, 3, 2, 4, 7, 8, 5, 6};
+   static const int MphTet10[] = {0, 1, 2, 3, 4, 6, 5, 7, 9, 8};
+   static const int MphHex27[] = {0, 1, 3, 2, 4, 5, 7, 6, 8, 9, 20, 11, 13, 10,
+                                  21, 12, 22, 26, 23, 15, 24, 14, 16, 17, 25, 18, 19};
+   static const int MphWdg18[] = {0, 1, 2, 3, 4, 5, 6, 7, 9,
+                                  8, 15, 10, 16, 17, 11, 12, 13, 14};
+   static const int MphPyr14[] = {0, 1, 3, 2, 4, 5, 6, 13, 8, 10, 7, 9, 12, 11};
+
+   static const int NasTet10[] = {0, 1, 2, 3, 4, 5, 6, 7, 9, 8};
+   static const int NasHex20[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 11,
+                                  13, 9, 10, 12, 14, 15, 16, 18, 19, 17};
+   static const int NasWdg15[] = {0, 1, 2, 3, 4, 5, 6, 9, 7, 8, 10, 11, 12, 14, 13};
+   static const int NasPyr13[] = {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12};
+
+   static const int *ElemNodesComsol[] = { MphEdg2, Msh3, MphQuad4, Msh4, MphHex8,
+                                          Msh6, MphPyr5, MphEdg3, MphTri6, MphQuad9,
+                                          MphTet10, MphHex27, MphWdg18, MphPyr14, MphPt,
+                                          SkipElem, SkipElem, SkipElem, SkipElem};
+   static const int *ElemNodesNastran[] = {SkipElem, Msh3, Msh4, Msh4, Msh8,
+                                           Msh6, Msh5, SkipElem, Msh6, Msh9,
+                                           NasTet10, SkipElem, SkipElem, SkipElem, SkipElem,
+                                           Msh8, NasHex20, NasWdg15, NasPyr13};
+
+   // Get line, strip comments, leading/trailing whitespace. Should not be called if end of
+   // file is expected.
+   static void GetLineComsol(std::ifstream &input, std::string &str)
+   {
+      std::getline(input, str);
+      // std::cout << str.length() << " str is: " << str << std::endl;
+      MFEM_VERIFY(input, "Unexpected read failure parsing mesh file!");
+      const std::size_t pos = str.find_first_of('#');
+      if (pos == 0 || str.length() == 0)
+      {
+         str.clear();
+         return;
+      }
+      else if (pos != std::string_view::npos)
+      {
+         str.resize(pos);
+      }
+      // std::cout << " str.find_first_not_of is: " << str.find_first_not_of("\n") << std::endl;
+      const std::size_t start = str.find_first_not_of(" \n");
+      if (start == std::string::npos)
+      {
+         str.clear();
+         return;
+      }
+      const std::size_t stop = str.find_last_not_of(" \n");
+      str = str.substr(start, stop - start + 1);
+   }
+
+   static void GetLineNastran(std::ifstream &input, std::string &str)
+   {
+      std::getline(input, str);
+      MFEM_VERIFY(input, "Unexpected read failure parsing mesh file!");
+      if (str[0] == '$')
+      {
+         str.clear();
+         return;
+      }
+   }
+
+   // COMSOL strings are parsed as an integer length followed by array of integers for the
+   // string characters.
+   template <bool Binary>
+   static void ReadStringComsol(std::istream &input, std::string &str)
+   {
+      MFEM_ABORT("ReadStringComsol not implemented!");
+   }
+
+   template <>
+   void ReadStringComsol<true>(std::istream &input, std::string &str)
+   {
+      int n;
+      std::vector<int> vstr;
+      input.read(reinterpret_cast<char *>(&n), sizeof(int));
+      vstr.resize(n);
+      input.read(reinterpret_cast<char *>(vstr.data()), (std::streamsize)(n * sizeof(int)));
+      str = std::string(vstr.begin(), vstr.end());
+   }
+
+   template <>
+   void ReadStringComsol<false>(std::istream &input, std::string &str)
+   {
+      int n;
+      str.clear();
+      input >> n >> str;
+   }
+
+   // Nastran has a special floating point format: "-7.-1" instead of "-7.E-01" or "2.3+2"
+   // instead of "2.3E+02".
+   static double ConvertDoubleNastran(const std::string &str)
+   {
+      double d;
+      try
+      {
+         d = std::stod(str);
+      }
+      catch (const std::invalid_argument &ia)
+      {
+         const std::size_t start = str.find_first_not_of(' ');
+         MFEM_VERIFY(start != std::string::npos,
+                     "Invalid number conversion parsing Nastran mesh!")
+         std::string fstr = str.substr(start);
+         std::size_t pos = fstr.find('+', 1); // Skip leading +/- sign
+         if (pos != std::string::npos)
+         {
+            fstr.replace(pos, 1, "E+");
+         }
+         else if ((pos = fstr.find('-', 1)) != std::string::npos)
+         {
+            fstr.replace(pos, 1, "E-");
+         }
+         d = std::stod(fstr);
+      }
+      return d;
+   }
+
+   static void WriteNode(std::ostream &buffer, const int tag, const double coord[])
+   {
+#if defined(GMSH_BIN)
+      buffer.write(reinterpret_cast<const char *>(&tag), sizeof(int));
+      buffer.write(reinterpret_cast<const char *>(coord), 3 * sizeof(double));
+      // No newline for binary data
+#else
+      // Always 3D coordinates (user sets floating point format/precision on buffer).
+      buffer << tag << ' ' << coord[0] << ' ' << coord[1] << ' ' << coord[2] << '\n';
+#endif
+   }
+
+   static void WriteElement(std::ostream &buffer, const int tag, const int type,
+                            const int geom, const int nodes[])
+   {
+#if defined(GMSH_BIN)
+      const int data[3] = {tag, geom, geom};
+      buffer.write(reinterpret_cast<const char *>(data), 3 * sizeof(int));
+      buffer.write(reinterpret_cast<const char *>(nodes),
+                   (std::streamsize)(ElemNumNodes[type - 1] * sizeof(int)));
+      // No newline for binary data
+#else
+      buffer << tag << ' ' << type << " 2 " << geom << ' ' << geom;
+      for (int i = 0; i < ElemNumNodes[type - 1]; i++)
+      {
+         buffer << ' ' << nodes[i];
+      }
+      buffer << '\n';
+#endif
+   }
+
+   static void WriteGmsh(std::ostream &buffer, const std::vector<double> &node_coords,
+                         const std::vector<int> &node_tags,
+                         const std::unordered_map<int, std::vector<int>> &elem_nodes)
+   {
+      // Write the Gmsh file header (version 2.2).
+      buffer << "$MeshFormat\n2.2 "
+             <<
+#if defined(GMSH_BIN)
+          "1 " <<
+#else
+          "0 " <<
+#endif
+          sizeof(double) << '\n';
+#if defined(GMSH_BIN)
+      const int one = 1;
+      buffer.write(reinterpret_cast<const char *>(&one), sizeof(int));
+      buffer << '\n';
+#endif
+      buffer << "$EndMeshFormat\n";
+
+      // Write mesh nodes.
+      const int num_nodes = (int)node_coords.size() / 3;
+      MFEM_VERIFY(num_nodes > 0 && node_coords.size() % 3 == 0,
+                  "Gmsh nodes should always be in 3D space!");
+      buffer << "$Nodes\n"
+             << num_nodes << '\n';
+      {
+         if (!node_tags.empty())
+         {
+            // Use input node tags which should be positive but don't need to be contiguous.
+            MFEM_VERIFY(node_tags.size() == (std::size_t)num_nodes,
+                        "Invalid size for node tags!");
+            for (int i = 0; i < num_nodes; i++)
+            {
+               WriteNode(buffer, node_tags[i], &node_coords[3 * i]);
+            }
+         }
+         else
+         {
+            // Label nodes as contiguous starting at 1.
+            for (int i = 0; i < num_nodes; i++)
+            {
+               WriteNode(buffer, i + 1, &node_coords[3 * i]);
+            }
+         }
+      }
+#if defined(GMSH_BIN)
+      buffer << '\n';
+#endif
+      buffer << "$EndNodes\n";
+
+      // Write mesh elements.
+      int tot_num_elem = 0;
+      for (const auto &[elem_type, nodes] : elem_nodes)
+      {
+         MFEM_VERIFY(elem_type > 0, "Invalid element type writing Gmsh elements!");
+         const int &num_elem_nodes = ElemNumNodes[elem_type - 1];
+         tot_num_elem += ((int)nodes.size()) / (num_elem_nodes + 1);
+         MFEM_VERIFY(nodes.size() % (num_elem_nodes + 1) == 0,
+                     "Unexpected data size when writing elements!");
+      }
+      MFEM_VERIFY(tot_num_elem > 0, "No mesh elements parsed from COMSOL mesh file!");
+      buffer << "$Elements\n"
+             << tot_num_elem << '\n';
+      {
+         int tag = 1; // Global element tag
+         for (const auto &[elem_type, nodes] : elem_nodes)
+         {
+            const int &num_elem_nodes = ElemNumNodes[elem_type - 1];
+            const int num_elem = (int)nodes.size() / (num_elem_nodes + 1);
+#if defined(GMSH_BIN)
+            // For binary output, write the element header for each type. Always have 2 tags
+            // (physical + geometry)
+            const int header[3] = {elem_type, num_elem, 2};
+            buffer.write(reinterpret_cast<const char *>(header), 3 * sizeof(int));
+#endif
+            for (int i = 0; i < num_elem; i++)
+            {
+               WriteElement(buffer, tag++, elem_type,
+                            nodes[i * (num_elem_nodes + 1)],       // Geometry tag
+                            &nodes[i * (num_elem_nodes + 1) + 1]); // Element nodes
+            }
+         }
+      }
+#if defined(GMSH_BIN)
+      buffer << '\n';
+#endif
+      buffer << "$EndElements\n";
+   }
+
+}
+
+// Convert a binary or ASCII COMSOL (.mphbin/.mphtxt) mesh to Gmsh v2.2.
+void Mesh::ConvertMeshComsol(const std::string &filename, std::ostream &buffer)
+{
+   // Read a COMSOL format mesh.
+   const int comsol_bin = !filename.compare(filename.length() - 7, 7, ".mphbin") ||
+                          !filename.compare(filename.length() - 7, 7, ".MPHBIN");
+   MFEM_VERIFY(!filename.compare(filename.length() - 7, 7, ".mphtxt") ||
+                   !filename.compare(filename.length() - 7, 7, ".MPHTXT") || comsol_bin,
+               "Invalid file extension for COMSOL mesh format conversion!");
+   std::string line;
+   std::ifstream input(filename);
+   if (!input.is_open())
+   {
+      MFEM_ABORT("Unable to open mesh file \"" << filename << "\"!");
+   }
+
+   // Parse COMSOL header. COMSOL encodes strings as integer-string pairs where the integer
+   // is the string length. It also allows for blank lines and other whitespace wherever in
+   // the file.
+   {
+      int version[2] = {-1, -1};
+      int num_tags = -1;
+      int num_types = -1;
+      if (!comsol_bin)
+      {
+         while (num_types < 0)
+         {
+            comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               if (version[0] < 0)
+               {
+                  sline >> version[0] >> version[1];
+               }
+               else if (num_tags < 0)
+               {
+                  sline >> num_tags;
+                  int i = 0;
+                  while (i < num_tags)
+                  {
+                     comsol::GetLineComsol(input, line);
+                     if (!line.empty())
+                     {
+                           i++;
+                     }
+                  }
+               }
+               else if (num_types < 0)
+               {
+                  sline >> num_types;
+                  int i = 0;
+                  while (i < num_types)
+                  {
+                     comsol::GetLineComsol(input, line);
+                     if (!line.empty())
+                     {
+                           i++;
+                     }
+                  }
+               }
+            }
+         }
+      }
+      else
+      {
+         input.read(reinterpret_cast<char *>(version), 2 * sizeof(int));
+         input.read(reinterpret_cast<char *>(&num_tags), sizeof(int));
+         {
+            int i = 0;
+            while (i < num_tags)
+            {
+               std::string dummy;
+               comsol::ReadStringComsol<true>(input, dummy);
+               i++;
+            }
+         }
+         input.read(reinterpret_cast<char *>(&num_types), sizeof(int));
+         {
+            int i = 0;
+            while (i < num_types)
+            {
+               std::string dummy;
+               comsol::ReadStringComsol<true>(input, dummy);
+               i++;
+            }
+         }
+      }
+      MFEM_VERIFY(version[0] == 0 && version[1] == 1, "Invalid COMSOL file version!");
+   }
+
+   // Parse mesh objects until we get to the mesh. Currently only supports a single mesh
+   // object in the file, and selections are ignored.
+   while (true)
+   {
+      int object[3] = {-1, -1, -1};
+      std::string object_class;
+      if (!comsol_bin)
+      {
+         while (object_class.empty())
+         {
+             comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               if (object[0] < 0)
+               {
+                  sline >> object[0] >> object[1] >> object[2];
+               }
+               else if (object_class.empty())
+               {
+                   comsol::ReadStringComsol<false>(sline, object_class);
+               }
+            }
+         }
+      }
+      else
+      {
+         input.read(reinterpret_cast<char *>(object), 3 * sizeof(int));
+         comsol::ReadStringComsol<true>(input, object_class);
+      }
+      MFEM_VERIFY(object[0] == 0 && object[1] == 0 && object[2] == 1,
+                  "Invalid COMSOL object version!");
+
+      // If yes, then ready to parse the mesh.
+      if (!object_class.compare("Mesh"))
+      {
+         break;
+      }
+
+      // Otherwise, parse over the selection to the next object.
+      MFEM_VERIFY(!object_class.compare("Selection"),
+                  "COMSOL mesh file only supports Mesh and Selection objects!");
+      int version = -1;
+      std::string label_str;
+      std::string tag_str;
+      int sdim = -1;
+      int num_ent = -1;
+      if (!comsol_bin)
+      {
+         while (num_ent < 0)
+         {
+             comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               if (version < 0)
+               {
+                  sline >> version;
+               }
+               else if (label_str.empty())
+               {
+                   comsol::ReadStringComsol<false>(sline, label_str);
+               }
+               else if (tag_str.empty())
+               {
+                   comsol::ReadStringComsol<false>(sline, tag_str);
+               }
+               else if (sdim < 0)
+               {
+                  sline >> sdim;
+               }
+               else if (num_ent < 0)
+               {
+                  sline >> num_ent;
+               }
+            }
+         }
+      }
+      else
+      {
+         input.read(reinterpret_cast<char *>(&version), sizeof(int));
+         comsol::ReadStringComsol<true>(input, label_str);
+         comsol::ReadStringComsol<true>(input, tag_str);
+         input.read(reinterpret_cast<char *>(&sdim), sizeof(int));
+         input.read(reinterpret_cast<char *>(&num_ent), sizeof(int));
+      }
+
+      // Parse over the entities in the selection.
+      int i = 0;
+      if (!comsol_bin)
+      {
+         while (i < num_ent)
+         {
+            comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               i++;
+            }
+         }
+      }
+      else
+      {
+         while (i < num_ent)
+         {
+            int dummy;
+            input.read(reinterpret_cast<char *>(&dummy), sizeof(int));
+            i++;
+         }
+      }
+   } // Repeat until Mesh is found
+
+   // Parse the mesh object header.
+   int sdim = -1;
+   int num_nodes = -1;
+   int nodes_start = -1;
+   {
+      int version = -1;
+      if (!comsol_bin)
+      {
+         while (nodes_start < 0)
+         {
+            comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               if (version < 0)
+               {
+                  sline >> version;
+               }
+               else if (sdim < 0)
+               {
+                  sline >> sdim;
+               }
+               else if (num_nodes < 0)
+               {
+                  sline >> num_nodes;
+               }
+               else if (nodes_start < 0)
+               {
+                  sline >> nodes_start;
+               }
+            }
+         }
+      }
+      else
+      {
+         input.read(reinterpret_cast<char *>(&version), sizeof(int));
+         input.read(reinterpret_cast<char *>(&sdim), sizeof(int));
+         input.read(reinterpret_cast<char *>(&num_nodes), sizeof(int));
+         input.read(reinterpret_cast<char *>(&nodes_start), sizeof(int));
+      }
+      MFEM_VERIFY(version == 4, "Only COMSOL files with Mesh version 4 are supported!");
+      MFEM_VERIFY(sdim > 1, "COMSOL mesh nodes are required to be in 2D or 3D space!");
+      MFEM_VERIFY(num_nodes > 0, "COMSOL mesh file contains no nodes!");
+      MFEM_VERIFY(nodes_start >= 0, "COMSOL mesh nodes have a negative starting tag!");
+   }
+
+   // Parse mesh nodes.
+   std::vector<double> node_coords;
+   {
+      node_coords.resize(3 * num_nodes,
+                         0.0); // Gmsh nodes are always 3D, so initialize to 0.0 in case
+      // z-coordinate isn't set
+      int i = 0;
+      if (!comsol_bin)
+      {
+         while (i < num_nodes)
+         {
+            comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               for (int j = 0; j < sdim; j++)
+               {
+                  sline >> node_coords[3 * i + j];
+               }
+               i++;
+            }
+         }
+      }
+      else
+      {
+         // Don't read as a single block in case sdim < 3.
+         while (i < num_nodes)
+         {
+            input.read(reinterpret_cast<char *>(node_coords.data() + 3 * i),
+                       (std::streamsize)(sdim * sizeof(double)));
+            i++;
+         }
+      }
+   }
+
+   // Parse mesh elements. Store for each element of each type: [geometry tag, [node tags]].
+   std::unordered_map<int, std::vector<int>> elem_nodes;
+   {
+      int num_elem_types = -1;
+      if (!comsol_bin)
+      {
+         while (num_elem_types < 0)
+         {
+            comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               if (num_elem_types < 0)
+               {
+                  sline >> num_elem_types;
+               }
+            }
+         }
+      }
+      else
+      {
+         input.read(reinterpret_cast<char *>(&num_elem_types), sizeof(int));
+      }
+      MFEM_VERIFY(num_elem_types > 0, "COMSOL mesh file contains no elements!");
+
+      int parsed_types = 0; // COMSOL groups elements by type in file
+      int elem_type = -1;
+      int num_elem_nodes = -1;
+      int num_elem = -1;
+      int num_elem_geom = -1;
+      bool skip_type = false;
+      while (parsed_types < num_elem_types)
+      {
+         if (!comsol_bin)
+         {
+             comsol::GetLineComsol(input, line);
+            if (!line.empty())
+            {
+               std::istringstream sline(line);
+               if (elem_type < 0)
+               {
+                  std::string elem_str;
+                  comsol::ReadStringComsol<false>(sline, elem_str);
+                  MFEM_VERIFY(!elem_str.empty(),
+                              "Unexpected empty element type found in COMSOL mesh file!");
+                  elem_type = comsol::ElemTypeComsol(elem_str);
+                  skip_type = (elem_type == 0);
+                  MFEM_VERIFY(skip_type || elem_nodes.find(elem_type) == elem_nodes.end(),
+                              "Duplicate element types found in COMSOL mesh file!");
+               }
+               else if (num_elem_nodes < 0)
+               {
+                  sline >> num_elem_nodes;
+                  MFEM_VERIFY(num_elem_nodes > 0,
+                              "COMSOL element type " << elem_type << " has no nodes!");
+                  MFEM_VERIFY(skip_type || num_elem_nodes == comsol::ElemNumNodes[elem_type - 1],
+                              "Mismatch between COMSOL and Gmsh element types!");
+               }
+               else if (num_elem < 0)
+               {
+                  sline >> num_elem;
+                  MFEM_VERIFY(num_elem > 0,
+                              "COMSOL mesh file has no elements of type " << elem_type << "!");
+                  std::vector<int> *data = nullptr;
+                  if (!skip_type)
+                  {
+                     data = &elem_nodes[elem_type];
+                     data->resize(num_elem * (num_elem_nodes + 1)); // Node tags + geometry tag
+                  }
+
+                  // Parse all element nodes.
+                  int i = 0;
+                  while (i < num_elem)
+                  {
+                     comsol::GetLineComsol(input, line);
+                     if (!line.empty())
+                     {
+                           if (!skip_type)
+                           {
+                              std::istringstream isline(line);
+                              for (int j = 0; j < num_elem_nodes; j++)
+                              {
+                                 // Permute and reset to 1-based node tags.
+                                 const int &p = comsol::ElemNodesComsol[elem_type - 1][j];
+                                 isline >> (*data)[i * (num_elem_nodes + 1) + 1 + p];
+                                 (*data)[i * (num_elem_nodes + 1) + 1 + p] += (1 - nodes_start);
+                              }
+                           }
+                           i++;
+                     }
+                  }
+               }
+               else if (num_elem_geom < 0)
+               {
+                  sline >> num_elem_geom;
+                  MFEM_VERIFY(num_elem_geom == num_elem,
+                              "COMSOL mesh file should have geometry tags for all elements!");
+                  std::vector<int> *data = nullptr;
+                  if (!skip_type)
+                  {
+                     MFEM_VERIFY(elem_nodes.find(elem_type) != elem_nodes.end(),
+                                 "Can't find expected element type!");
+                     data = &elem_nodes[elem_type];
+                     MFEM_VERIFY(data->size() == (std::size_t)num_elem * (num_elem_nodes + 1),
+                                 "Unexpected element data size!");
+                  }
+
+                  // Parse all element geometry tags (stored at beginning of element nodes).
+                  // For `sdim` mesh and geometric entites in < `sdim`, the exported COMSOL tags are 0-based and need
+                  // correcting to 1-based for Gmsh.
+                  // 
+                  int i = 0;
+                  const int geom_start =
+                     (sdim==3) ? 
+                     ((elem_type < 4 || (elem_type > 7 && elem_type < 11)) ? 1 : 0) : 
+                     ((elem_type < 2) ? 1 : 0);
+                  while (i < num_elem)
+                  {
+                     comsol::GetLineComsol(input, line);
+                     if (!line.empty())
+                     {
+                           if (!skip_type)
+                           {
+                              std::istringstream ssline(line);
+                              ssline >> (*data)[i * (num_elem_nodes + 1)];
+                              (*data)[i * (num_elem_nodes + 1)] += geom_start;
+                           }
+                           i++;
+                     }
+                  }
+
+                  // Debug
+                   std::cout << "Finished parsing " << num_elem
+                             << " elements with type " << elem_type
+                             << " (parsed types " << parsed_types + 1 << ")\n";
+
+                  // Finished with this element type, on to the next.
+                  parsed_types++;
+                  elem_type = num_elem_nodes = num_elem = num_elem_geom = -1;
+                  skip_type = false;
+               }
+            }
+         }
+         else
+         {
+            std::string elem_str;
+            comsol::ReadStringComsol<true>(input, elem_str);
+            MFEM_VERIFY(!elem_str.empty(),
+                        "Unexpected empty element type found in COMSOL mesh file!");
+            elem_type = comsol::ElemTypeComsol(elem_str);
+            skip_type = (elem_type == 0);
+            MFEM_VERIFY(skip_type || elem_nodes.find(elem_type) == elem_nodes.end(),
+                        "Duplicate element types found in COMSOL mesh file!");
+            input.read(reinterpret_cast<char *>(&num_elem_nodes), sizeof(int));
+            MFEM_VERIFY(num_elem_nodes > 0,
+                        "COMSOL element type " << elem_type << " has no nodes!");
+            MFEM_VERIFY(skip_type || num_elem_nodes == comsol::ElemNumNodes[elem_type - 1],
+                        "Mismatch between COMSOL and Gmsh element types!");
+
+            // Parse all element nodes.
+            input.read(reinterpret_cast<char *>(&num_elem), sizeof(int));
+            MFEM_VERIFY(num_elem > 0,
+                        "COMSOL mesh file has no elements of type " << elem_type << "!");
+            std::vector<int> *data = nullptr;
+            if (!skip_type)
+            {
+               data = &elem_nodes[elem_type];
+               data->resize(num_elem * (num_elem_nodes + 1)); // Node tags + geometry tag
+            }
+            int i = 0;
+            std::vector<int> nodes(num_elem_nodes);
+            while (i < num_elem)
+            {
+               input.read(reinterpret_cast<char *>(nodes.data()),
+                          (std::streamsize)(num_elem_nodes * sizeof(int)));
+               if (!skip_type)
+               {
+                  for (int j = 0; j < num_elem_nodes; j++)
+                  {
+                     // Permute and reset to 1-based node tags.
+                     const int &p = comsol::ElemNodesComsol[elem_type - 1][j];
+                     (*data)[i * (num_elem_nodes + 1) + 1 + p] = nodes[j] + (1 - nodes_start);
+                  }
+               }
+               i++;
+            }
+
+            // Parse element geometry tags.
+            input.read(reinterpret_cast<char *>(&num_elem_geom), sizeof(int));
+            MFEM_VERIFY(num_elem_geom == num_elem,
+                        "COMSOL mesh file should have geometry tags for all elements!");
+
+            i = 0;
+            const int geom_start = (elem_type < 4 || (elem_type > 7 && elem_type < 11)) ? 1 : 0;
+            int geom_tag;
+            while (i < num_elem)
+            {
+               input.read(reinterpret_cast<char *>(&geom_tag), sizeof(int));
+               if (!skip_type)
+               {
+                  (*data)[i * (num_elem_nodes + 1)] = geom_tag + geom_start;
+               }
+               i++;
+            }
+
+            // Debug
+             std::cout << "Finished parsing " << num_elem
+                       << " elements with type " << elem_type
+                       << " (parsed types " << parsed_types + 1 << ")\n";
+
+            // Finished with this element type, on to the next.
+            parsed_types++;
+            elem_type = num_elem_nodes = num_elem = num_elem_geom = -1;
+            skip_type = false;
+         }
+      }
+   }
+
+   // Finalize input, write the Gmsh mesh.
+   input.close();
+   std::vector<int> dummy;
+   comsol::WriteGmsh(buffer, node_coords, dummy, elem_nodes);
+}
+
+// Convert an ASCII NASTRAN (.nas/.bdf) mesh to Gmsh v2.2.
+void Mesh::ConvertMeshNastran(const std::string &filename, std::ostream &buffer)
+{
+   // Read a Nastran/BDF format mesh.
+   MFEM_VERIFY(!filename.compare(filename.length() - 4, 4, ".nas") ||
+                   !filename.compare(filename.length() - 4, 4, ".NAS") ||
+                   !filename.compare(filename.length() - 4, 4, ".bdf") ||
+                   !filename.compare(filename.length() - 4, 4, ".BDF"),
+               "Invalid file extension for Nastran mesh format conversion!");
+   std::string line;
+   std::ifstream input(filename);
+   if (!input.is_open())
+   {
+      MFEM_ABORT("Unable to open mesh file \"" << filename << "\"!");
+   }
+   const int NASTRAN_CHUNK = 8; // NASTRAN divides row into 10 columns of 8 spaces
+   const int MAX_CHUNK = 9;     // Never read the 10-th chunk
+
+   // Parse until bulk data starts.
+   while (true)
+   {
+      comsol::GetLineNastran(input, line);
+      if (line.length() > 0)
+      {
+         if (!line.compare("BEGIN BULK"))
+         {
+            break;
+         }
+      }
+   }
+
+   // Parse mesh nodes and elements. It is expected that node tags start at 1 and are
+   // contiguous. Store for each element of each type: [geometry tag, [node tags]].
+   std::vector<double> node_coords;
+   std::vector<int> node_tags;
+   std::unordered_map<int, std::vector<int>> elem_nodes;
+   int elem_type;
+   while (true)
+   {
+      comsol::GetLineNastran(input, line);
+      if (line.length() > 0)
+      {
+         if (!line.compare("ENDDATA"))
+         {
+            break; // Done parsing file
+         }
+         else if (!line.compare(0, 5, "GRID*"))
+         {
+            // Coordinates in long field format (8 + 16 * 4 + 8).
+            std::string next;
+            comsol::GetLineNastran(input, next);
+            MFEM_VERIFY(!next.empty(), "Unexpected empty line parsing Nastran!");
+
+            node_tags.push_back(std::stoi(line.substr(1 * NASTRAN_CHUNK, 2 * NASTRAN_CHUNK)));
+            node_coords.insert(
+                node_coords.end(),
+                {comsol::ConvertDoubleNastran(line.substr(5 * NASTRAN_CHUNK, 2 * NASTRAN_CHUNK)),
+                 comsol::ConvertDoubleNastran(line.substr(7 * NASTRAN_CHUNK, 2 * NASTRAN_CHUNK)),
+                 comsol::ConvertDoubleNastran(next.substr(1 * NASTRAN_CHUNK, 2 * NASTRAN_CHUNK))});
+         }
+         else if (!line.compare(0, 4, "GRID"))
+         {
+            if (line.find_first_of(',') != std::string::npos)
+            {
+               // Free field format (comma separated).
+               std::istringstream sline(line);
+
+               std::string word;
+               std::getline(sline, word, ','); // Discard "GRID"
+
+               std::getline(sline, word, ',');
+               node_tags.push_back(std::stoi(word));
+
+               std::getline(sline, word, ','); // Discard coordinate system
+
+               std::getline(sline, word, ',');
+               double x = comsol::ConvertDoubleNastran(word);
+               std::getline(sline, word, ',');
+               double y = comsol::ConvertDoubleNastran(word);
+               std::getline(sline, word, ',');
+               double z = comsol::ConvertDoubleNastran(word);
+               node_coords.insert(node_coords.end(), {x, y, z});
+            }
+            else
+            {
+               // Short format (10 * 8).
+               node_tags.push_back(std::stoi(line.substr(1 * NASTRAN_CHUNK, NASTRAN_CHUNK)));
+               node_coords.insert(
+                   node_coords.end(),
+                   {comsol::ConvertDoubleNastran(line.substr(3 * NASTRAN_CHUNK, NASTRAN_CHUNK)),
+                    comsol::ConvertDoubleNastran(line.substr(4 * NASTRAN_CHUNK, NASTRAN_CHUNK)),
+                    comsol::ConvertDoubleNastran(line.substr(5 * NASTRAN_CHUNK, NASTRAN_CHUNK))});
+            }
+         }
+         else if ((elem_type = comsol::ElemTypeNastran(line)))
+         {
+            // Prepare to parse the element ID and nodes.
+            const bool free = (line.find_first_of(',') != std::string::npos);
+
+            // Get the element type, tag, and geometry attribute. Then get the element nodes on
+            // this line.
+            std::string elem_str;
+            // int elem_tag;
+            int geom_tag;
+            std::vector<int> nodes;
+            std::string word;
+            if (!free)
+            {
+               elem_str = line.substr(0 * NASTRAN_CHUNK, NASTRAN_CHUNK);
+               const std::size_t stop = elem_str.find_last_not_of(' ');
+               MFEM_VERIFY(stop != std::string::npos, "Invalid element type string!");
+               elem_str.resize(stop + 1);
+               // elem_tag = std::stoi(line.substr(1*NASTRAN_CHUNK, NASTRAN_CHUNK));
+               geom_tag = std::stoi(line.substr(2 * NASTRAN_CHUNK, NASTRAN_CHUNK));
+
+               int i = 3;
+               while (i < MAX_CHUNK)
+               {
+                  word = line.substr((i++) * NASTRAN_CHUNK, NASTRAN_CHUNK);
+                  if (word.find_first_not_of(' ') == std::string::npos)
+                  {
+                     break;
+                  }
+                  nodes.push_back(std::stoi(word));
+               }
+            }
+            else
+            {
+               std::istringstream sline(line);
+               std::getline(sline, elem_str, ',');
+               std::getline(sline, word, ',');
+               // elem_tag = std::stoi(word);
+               std::getline(sline, word, ',');
+               geom_tag = std::stoi(word);
+
+               int i = 3;
+               while (i < MAX_CHUNK)
+               {
+                  std::getline(sline, word, ',');
+                  if (word.find_first_not_of(' ') == std::string::npos)
+                  {
+                     break;
+                  }
+                  nodes.push_back(std::stoi(word));
+                  i++;
+               }
+            }
+
+            // Handle line continuation.
+            while (input.peek() == '+')
+            {
+               std::string next;
+               comsol::GetLineNastran(input, next);
+               MFEM_VERIFY(!next.empty(), "Unexpected empty line parsing Nastran!");
+
+               if (!free)
+               {
+                  int i = 1;
+                  while (i < MAX_CHUNK)
+                  {
+                     word = next.substr((i++) * NASTRAN_CHUNK, NASTRAN_CHUNK);
+                     if (word.find_first_not_of(' ') == std::string::npos)
+                     {
+                           break;
+                     }
+                     nodes.push_back(std::stoi(word));
+                  }
+               }
+               else
+               {
+                  std::istringstream snext(next);
+                  int i = 1;
+                  while (i < MAX_CHUNK)
+                  {
+                     std::getline(snext, word, ',');
+                     if (word.find_first_not_of(' ') == std::string::npos)
+                     {
+                           break;
+                     }
+                     nodes.push_back(std::stoi(word));
+                     i++;
+                  }
+               }
+            }
+
+            // Save the element and its geometry tag.
+            elem_type = comsol::HOElemTypeNastran(elem_type, (int)nodes.size());
+            const int &num_elem_nodes = comsol::ElemNumNodes[elem_type - 1];
+            MFEM_VERIFY((std::size_t)num_elem_nodes == nodes.size(),
+                        "Mismatch between Nastran and Gmsh element types!");
+            std::vector<int> &data = elem_nodes[elem_type];
+            const int i = (int)data.size();
+            data.resize(i + 1 + num_elem_nodes);
+            data[i] = geom_tag;
+            for (int j = 0; j < num_elem_nodes; j++)
+            {
+               // Permute back to Gmsh ordering.
+               const int &p = comsol::ElemNodesNastran[elem_type - 1][j];
+               data[i + 1 + p] = nodes[j];
+            }
+         }
+      }
+   }
+
+   // Finalize input, write the Gmsh mesh.
+   input.close();
+   comsol::WriteGmsh(buffer, node_coords, node_tags, elem_nodes);
+}
 
 } // namespace mfem

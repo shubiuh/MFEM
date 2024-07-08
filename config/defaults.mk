@@ -1,4 +1,4 @@
-# Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+# Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 # at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 # LICENSE and NOTICE for details. LLNL-CODE-806117.
 #
@@ -95,6 +95,10 @@ else
    # Silence unused command line argument warnings when generating dependencies
    # with mpicxx and clang
    DEP_FLAGS := -Wno-unused-command-line-argument $(DEP_FLAGS)
+   # Silence "ignoring duplicate libraries" warnings on new (Xcode 15) linker
+   ifneq (,$(findstring PROJECT:dyld,$(shell ld -v 2>&1)))
+      LDFLAGS_INTERNAL = -Xlinker -no_warn_duplicate_libraries
+   endif
 endif
 
 # Set CXXFLAGS to overwrite the default selection of DEBUG_FLAGS/OPTIM_FLAGS
@@ -117,9 +121,10 @@ MFEM_MPI_NP = 4
 # config.hpp. The values below are the defaults for generating the actual values
 # in config.mk and config.hpp.
 
-MFEM_USE_MPI           = NO
+MFEM_USE_MPI           = YES
 MFEM_USE_METIS         = $(MFEM_USE_MPI)
 MFEM_USE_METIS_5       = NO
+MFEM_PRECISION         = double
 MFEM_DEBUG             = NO
 MFEM_USE_EXCEPTIONS    = NO
 MFEM_USE_ZLIB          = NO
@@ -131,7 +136,7 @@ MFEM_USE_LEGACY_OPENMP = NO
 MFEM_USE_MEMALLOC      = YES
 MFEM_TIMER_TYPE        = $(if $(NOTMAC),2,4)
 MFEM_USE_SUNDIALS      = NO
-MFEM_USE_SUITESPARSE   = NO
+MFEM_USE_SUITESPARSE   = YES
 MFEM_USE_SUPERLU       = NO
 MFEM_USE_SUPERLU5      = NO
 MFEM_USE_MUMPS         = NO
@@ -139,7 +144,7 @@ MFEM_USE_STRUMPACK     = NO
 MFEM_USE_GINKGO        = NO
 MFEM_USE_AMGX          = NO
 MFEM_USE_GNUTLS        = NO
-MFEM_USE_NETCDF        = NO
+MFEM_USE_NETCDF        = YES
 MFEM_USE_PETSC         = NO
 MFEM_USE_SLEPC         = NO
 MFEM_USE_MPFR          = NO
@@ -160,13 +165,27 @@ MFEM_USE_UMPIRE        = NO
 MFEM_USE_SIMD          = NO
 MFEM_USE_ADIOS2        = NO
 MFEM_USE_MKL_CPARDISO  = NO
-MFEM_USE_MKL_PARDISO   = NO
+MFEM_USE_MKL_PARDISO   = YES
 MFEM_USE_MOONOLITH     = NO
 MFEM_USE_ADFORWARD     = NO
 MFEM_USE_CODIPACK      = NO
 MFEM_USE_BENCHMARK     = NO
 MFEM_USE_PARELAG       = NO
+MFEM_USE_TRIBOL        = NO
 MFEM_USE_ENZYME        = NO
+MFEM_USE_COMSOL        = YES
+
+# Process MFEM_PRECISION -> MFEM_USE_SINGLE, MFEM_USE_DOUBLE
+ifneq ($(filter double Double DOUBLE,$(MFEM_PRECISION)),)
+   MFEM_USE_DOUBLE = YES
+   MFEM_USE_SINGLE = NO
+else ifneq ($(filter single Single SINGLE,$(MFEM_PRECISION)),)
+   MFEM_USE_DOUBLE = NO
+   MFEM_USE_SINGLE = YES
+else ifeq ($(MAKECMDGOALS),config)
+   $(error Invalid floating-point precision: \
+     MFEM_PRECISION = $(MFEM_PRECISION))
+endif
 
 # MPI library compile and link flags
 # These settings are used only when building MFEM with MPI + HIP
@@ -275,7 +294,7 @@ endif
 
 # SuiteSparse library configuration
 LIB_RT = $(if $(NOTMAC),-lrt,)
-SUITESPARSE_DIR = @MFEM_DIR@/../SuiteSparse
+SUITESPARSE_DIR = 'D:/Dropbox/Github/suitesparse-metis-for-windows/SuiteSparse'
 SUITESPARSE_OPT = -I$(SUITESPARSE_DIR)/include
 SUITESPARSE_LIB = $(XLINKER)-rpath,$(SUITESPARSE_DIR)/lib\
  -L$(SUITESPARSE_DIR)/lib -lklu -lbtf -lumfpack -lcholmod -lcolamd -lamd -lcamd\
@@ -317,8 +336,13 @@ MPI_FORTRAN_LIB = -lmpifort
 # MUMPS library configuration
 MUMPS_DIR = @MFEM_DIR@/../MUMPS_5.5.0
 MUMPS_OPT = -I$(MUMPS_DIR)/include
-MUMPS_LIB = $(XLINKER)-rpath,$(MUMPS_DIR)/lib -L$(MUMPS_DIR)/lib -ldmumps\
- -lmumps_common -lpord $(SCALAPACK_LIB) $(LAPACK_LIB) $(MPI_FORTRAN_LIB)
+MUMPS_LIB = $(XLINKER)-rpath,$(MUMPS_DIR)/lib -L$(MUMPS_DIR)/lib
+ifeq ($(MFEM_USE_SINGLE),YES)
+   MUMPS_LIB += -lsmumps
+else
+   MUMPS_LIB += -ldmumps
+endif
+MUMPS_LIB += -lmumps_common -lpord $(SCALAPACK_LIB) $(LAPACK_LIB) $(MPI_FORTRAN_LIB)
 
 # STRUMPACK library configuration
 STRUMPACK_DIR = @MFEM_DIR@/../STRUMPACK-build
@@ -369,15 +393,15 @@ GINKGO_LIB = $(XLINKER)-rpath,$(GINKGO_LINK_LIB_DIR) -L$(GINKGO_LINK_LIB_DIR)\
 # AmgX library configuration
 AMGX_DIR = @MFEM_DIR@/../amgx
 AMGX_OPT = -I$(AMGX_DIR)/include
-AMGX_LIB = -lcusparse -lcusolver -lcublas -lnvToolsExt -L$(AMGX_DIR)/lib -lamgx
+AMGX_LIB = -L$(AMGX_DIR)/lib -lamgx -lcusparse -lcusolver -lcublas -lnvToolsExt
 
 # GnuTLS library configuration
 GNUTLS_OPT =
 GNUTLS_LIB = -lgnutls
 
 # NetCDF library configuration
-NETCDF_DIR = $(HOME)/local
-HDF5_DIR   = $(HOME)/local
+NETCDF_DIR = 'C:/Program Files/netCDF4'
+HDF5_DIR   = 'C:/Program Files/HDF_Group/HDF5/1.14.0'
 NETCDF_OPT = -I$(NETCDF_DIR)/include -I$(HDF5_DIR)/include $(ZLIB_OPT)
 NETCDF_LIB = $(XLINKER)-rpath,$(NETCDF_DIR)/lib -L$(NETCDF_DIR)/lib\
  $(XLINKER)-rpath,$(HDF5_DIR)/lib -L$(HDF5_DIR)/lib\
@@ -558,17 +582,27 @@ MKL_CPARDISO_LIB = $(XLINKER)-rpath,$(MKL_CPARDISO_DIR)/$(MKL_LIBRARY_SUBDIR)\
    -lmkl_intel_lp64 -lmkl_sequential -lmkl_core
 
 # MKL Pardiso library configuration
-MKL_PARDISO_DIR ?=
-MKL_LIBRARY_SUBDIR ?= lib
+MKL_PARDISO_DIR = 'C:/Program Files (x86)/Intel/oneAPI/mkl/latest'
+MKL_LIBRARY_SUBDIR ?= lib/intel64
 MKL_PARDISO_OPT = -I$(MKL_PARDISO_DIR)/include
 MKL_PARDISO_LIB = $(XLINKER)-rpath,$(MKL_PARDISO_DIR)/$(MKL_LIBRARY_SUBDIR)\
    -L$(MKL_PARDISO_DIR)/$(MKL_LIBRARY_SUBDIR)\
-   -lmkl_intel_lp64 -lmkl_sequential -lmkl_core
+   -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lmkl_intel_thread
 
 # PARELAG library configuration
 PARELAG_DIR = @MFEM_DIR@/../parelag
 PARELAG_OPT = -I$(PARELAG_DIR)/src -I$(PARELAG_DIR)/build/src
 PARELAG_LIB = -L$(PARELAG_DIR)/build/src -lParELAG
+
+# Tribol library configuration
+ifeq ($(MFEM_USE_TRIBOL),YES)
+   BASE_FLAGS = -std=c++14
+endif
+AXOM_DIR = @MFEM_DIR@/../axom
+TRIBOL_DIR = @MFEM_DIR@/../tribol
+TRIBOL_OPT = -I$(TRIBOL_DIR)/include -I$(AXOM_DIR)/include
+TRIBOL_LIB = -L$(TRIBOL_DIR)/lib -ltribol -lredecomp -L$(AXOM_DIR)/lib -laxom_mint\
+   -laxom_slam -laxom_slic -laxom_core
 
 # Enzyme configuration
 
@@ -585,6 +619,8 @@ ENZYME_DIR ?= @MFEM_DIR@/../enzyme
 ENZYME_VERSION ?= 14
 ENZYME_OPT = -fno-experimental-new-pass-manager -Xclang -load -Xclang $(ENZYME_DIR)/ClangEnzyme-$(ENZYME_VERSION).so
 ENZYME_LIB = ""
+
+MFEM_GMSH_BIN = YES
 
 # If YES, enable some informational messages
 VERBOSE = NO

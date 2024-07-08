@@ -1,4 +1,4 @@
-# Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+# Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 # at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 # LICENSE and NOTICE for details. LLNL-CODE-806117.
 #
@@ -44,6 +44,7 @@ list(APPEND HDRS
   handle.hpp
   invariants.hpp
   kernels.hpp
+  lapack.hpp
   linalg.hpp
   matrix.hpp
   ode.hpp
@@ -125,8 +126,12 @@ if (MFEM_USE_MKL_CPARDISO)
 endif()
 
 if (MFEM_USE_MKL_PARDISO)
-  list(APPEND SRCS pardiso.cpp)
-  list(APPEND HDRS pardiso.hpp)
+  list(APPEND SRCS 
+  pardiso.cpp
+  pardisocomp.cpp)
+  list(APPEND HDRS 
+  pardiso.hpp
+  pardisocomp.hpp)
 endif()
 
 convert_filenames_to_full_paths(SRCS)

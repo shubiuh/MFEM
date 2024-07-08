@@ -50,8 +50,15 @@
 //               We recommend viewing examples 1, 3 and 4 before viewing this
 //               example.
 
+// add MKL Pardiso solver from ex3
+// added the anisotropic material from ex31
+// added the point source
+// added mesh from Palace (meshio.hpp)
+// add Laplace B.C. from ex27
+
 #include "mfem.hpp"
 #include "meshio.hpp"
+#include "mkl.h"
 
 #include <fstream>
 #include <sstream>
@@ -61,6 +68,9 @@
 #include <limits>
 #include <map>
 #include <filesystem>
+#include <thread>
+#include <chrono>
+#include <cstdlib>
 
 using namespace std;
 using namespace mfem;
@@ -75,7 +85,7 @@ static constexpr double mu0_ = 4.0e-7 * M_PI;
 
 static double mu_ = 1.0;
 static double epsilon_ = 1.0;
-static double sigma_ = 1.0e-5;
+static double sigma_ = 0.0;
 static double omega_ = 10.0;
 
 double u0_real_exact(const Vector&);
@@ -89,24 +99,69 @@ void u2_imag_exact(const Vector&, Vector&);
 
 bool check_for_inline_mesh(const char* mesh_file);
 
-Mesh LoadMeshNew(const std::string& path);
+Mesh* LoadMeshNew(const std::string& path);
+
+void PrintMatrixConstantCoefficient(mfem::MatrixConstantCoefficient& coeff);
+
+/// Generate a name for the file
+/// using the mesh's element type, the fec collection and the file extension
+template<typename FEColType>
+std::string generateMeshFilename(FEColType& fec, Mesh& mesh,
+    const std::string& prefix = "",
+    const std::string& fileExt = "")
+{
+    std::stringstream sstr;
+
+    REQUIRE(mesh.GetNE() == 1);
+    int geom = mesh.GetElementBaseGeometry(0);
+
+    sstr << prefix
+        << Geometry::Name[geom] << "_" << fec.Name()
+        << fileExt;
+
+    return sstr.str();
+}
+
+/// Convert a set of attribute numbers to a marker array
+/** The marker array will be of size max_attr and it will contain only zeroes
+    and ones. Ones indicate which attribute numbers are present in the attrs
+    array. In the special case when attrs has a single entry equal to -1 the
+    marker array will contain all ones. */
+void AttrToMarker(int max_attr, const Array<int>& attrs, Array<int>& marker);
 
 int main(int argc, char* argv[])
 {
+    std::cout << mkl_get_max_threads() << std::endl; // in VS2022, check properties->intel library for OneAPI->Use oneMKL (Parallel)
+
     // 1. Parse command-line options.
     //const char* mesh_file = "../data/em_sphere_mfem_ex0_coarse.mphtxt";
-    const char* mesh_file = "../data/simple_cube.mphtxt";
+    //const char* mesh_file = "../data/em_sphere_mfem_ex0.mphtxt";
+    //const char* mesh_file = "../data/simple_cube.mphtxt";
+    const char* mesh_file = "../data/cube_comsol.mphtxt";
+    //const char* mesh_file = "../data/inline-tet.mesh";
     int ref_levels = 0;
     int order = 1;
     int prob = 1;
-    double freq = 300.0e6;
+    double freq = 600.0e6;
     double a_coef = 0.0;
-    bool visualization = 1;
+    bool visualization = 0;
     bool herm_conv = true;
     bool exact_sol = true;
     bool pa = false;
     const char* device_config = "cpu";
     bool use_gmres = true;
+    double mat_val = 1.0;
+    double rbc_a_val = 1.0; // du/dn + a * u = b
+    double rbc_b_val = 1.0;
+    int logging_ = 1;
+
+    std::vector<int> values = {1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, \
+        17, 20, 21, 23, 24, 27, 30, 31, 32, 33, 35, 36, 38, \
+        41, 43, 46, 53, 56, 63, 64, 65, 66, 76, 77, 79, 82, \
+        84, 87, 94, 97, 104, 105, 106, 107, 108, 109, 110, \
+        111, 112, 113, 114, 115, 116};
+    Array<int> abcs(values.data(), values.size());
+    Array<int> dbcs;
 
     OptionsParser args(argc, argv);
     args.AddOption(&mesh_file, "-m", "--mesh",
@@ -143,6 +198,17 @@ int main(int argc, char* argv[])
         "Device configuration string, see Device::Configure().");
     args.AddOption(&use_gmres, "-g", "--gmres", "-no-g",
         "--no-grems", "Use GMRES solver or FGRMES solver.");
+    args.AddOption(&mat_val, "-mat", "--material-value",
+                  "Constant value for material coefficient "
+                  "in the Laplace operator.");
+    args.AddOption(&rbc_a_val, "-rbc-a", "--robin-a-value",
+                  "Constant 'a' value for Robin Boundary Condition: "
+                  "du/dn + a * u = b.");
+    args.AddOption(&rbc_b_val, "-rbc-b", "--robin-b-value",
+                  "Constant 'b' value for Robin Boundary Condition: "
+                  "du/dn + a * u = b.");
+    args.AddOption(&abcs, "-abcs", "--absorbing-bc-surf",
+        "Absorbing Boundary Condition Surfaces");
     args.Parse();
     if (!args.Good())
     {
@@ -181,15 +247,15 @@ int main(int argc, char* argv[])
     //    quadrilateral, tetrahedral, hexahedral, surface and volume meshes
     //    with the same code.
     //Mesh* mesh = new Mesh(mesh_file, 1, 1);
-    Mesh mesh = LoadMeshNew(mesh_file);
-    int dim = mesh.Dimension();
+    Mesh* mesh = LoadMeshNew(mesh_file);
+    int dim = mesh->Dimension();
 
     // 4. Refine the mesh to increase resolution. In this example we do
     //    'ref_levels' of uniform refinement where the user specifies
     //    the number of levels with the '-r' option.
     for (int l = 0; l < ref_levels; l++)
     {
-        mesh.UniformRefinement();
+        mesh->UniformRefinement();
     }
 
     // 5. Define a finite element space on the mesh. Here we use continuous
@@ -202,15 +268,15 @@ int main(int argc, char* argv[])
         prob = 0;
     }
 
-    FiniteElementCollection* fec = NULL;
+    ND_FECollection* fec = NULL;
     switch (prob)
     {
-    case 0:  fec = new H1_FECollection(order, dim);      break;
+    //case 0:  fec = new H1_FECollection(order, dim);      break;
     case 1:  fec = new ND_FECollection(order, dim);      break;
-    case 2:  fec = new RT_FECollection(order - 1, dim);  break;
+    //case 2:  fec = new RT_FECollection(order - 1, dim);  break;
     default: break; // This should be unreachable
     }
-    FiniteElementSpace* fespace = new FiniteElementSpace(&mesh, fec);
+    FiniteElementSpace* fespace = new FiniteElementSpace(mesh, fec);
     cout << "Number of finite element unknowns: " << fespace->GetTrueVSize()
         << endl;
 
@@ -219,37 +285,54 @@ int main(int argc, char* argv[])
     //    of mesh and the problem type.
     Array<int> ess_tdof_list;
     Array<int> ess_bdr;
-    if (mesh.bdr_attributes.Size())
+    if (mesh->bdr_attributes.Size())
     {
-        ess_bdr.SetSize(mesh.bdr_attributes.Max());
+        ess_bdr.SetSize(mesh->bdr_attributes.Max());
         ess_bdr = 0;
         //fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
     }
+    Array<int> rbc_bdr(mesh->bdr_attributes.Max());
+    rbc_bdr = 0; rbc_bdr[1] = 1;
+
+    // Array of 0's and 1's marking the location of absorbing surfaabc_marker_ces
+    Array<int> abc_marker_;
+    Coefficient* etaInvCoef_; // Admittance Coefficient
+    AttrToMarker(mesh->bdr_attributes.Max(), abcs, abc_marker_);
+    etaInvCoef_ = new ConstantCoefficient(omega_*sqrt(epsilon0_*4 / mu0_));
+
+    ConstantCoefficient matCoef(mat_val);
+    ConstantCoefficient rbcACoef(rbc_a_val);
+    ConstantCoefficient rbcBCoef(rbc_b_val);
+
+    ProductCoefficient m_rbcACoef(matCoef, rbcACoef);
+    ProductCoefficient m_rbcBCoef(matCoef, rbcBCoef);
 
     // 7. Set up the linear form b(.) which corresponds to the right-hand side of
     //    the FEM linear system.
     VectorDeltaCoefficient* delta_one; // add point source
     double src_scalar = omega_ * 1.0;
+    double position = 0.50;
     if (dim == 1)
     {
         Vector dir(1);
         dir[0] = 1.0;
-        delta_one = new VectorDeltaCoefficient(dir, 0.0, src_scalar);
+        delta_one = new VectorDeltaCoefficient(dir, position, src_scalar);
     }
     else if (dim == 2)
     {
         Vector dir(2);
         dir[0] = 0.0; dir[1] = 1.0;
-        delta_one = new VectorDeltaCoefficient(dir, 0.0, 0.0, src_scalar);
+        delta_one = new VectorDeltaCoefficient(dir, position, position, src_scalar);
     }
     else if (dim == 3)
     {
         Vector dir(3);
         dir[0] = 0.0; dir[1] = 0.0; dir[2] = 1.0;
-        delta_one = new VectorDeltaCoefficient(dir, 0.0, 0.0, 0.0, src_scalar);
+        delta_one = new VectorDeltaCoefficient(dir, position, position, position, src_scalar);
     }
     ComplexLinearForm b(fespace, conv);
     b.AddDomainIntegrator(NULL, new VectorFEDomainLFIntegrator(*delta_one));
+    //b.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(m_rbcBCoef), NULL, rbc_bdr);
     b.Vector::operator=(0.0);
     b.Assemble();
 
@@ -321,9 +404,9 @@ int main(int argc, char* argv[])
         socketstream sol_sock_i(vishost, visport);
         sol_sock_r.precision(8);
         sol_sock_i.precision(8);
-        sol_sock_r << "solution\n" << mesh << u_exact->real()
+        sol_sock_r << "solution\n" << *mesh << u_exact->real()
             << "window_title 'Exact: Real Part'" << flush;
-        sol_sock_i << "solution\n" << mesh << u_exact->imag()
+        sol_sock_i << "solution\n" << *mesh << u_exact->imag()
             << "window_title 'Exact: Imaginary Part'" << flush;
     }
 
@@ -341,9 +424,29 @@ int main(int argc, char* argv[])
     //       -Grad(a Div) - omega^2 b + i omega c
     //
     ConstantCoefficient stiffnessCoef(1.0 / mu_ / mu0_);
-    ConstantCoefficient massCoef(-omega_ * omega_ * epsilon_ * epsilon0_);
-    ConstantCoefficient lossCoef(omega_ * sigma_);
+    ConstantCoefficient massCoef(-omega_ * omega_ * epsilon_ * epsilon0_); std::cout << std::setw(20) << ( - omega_ * omega_ * epsilon_ * epsilon0_) << std::endl;
+    ConstantCoefficient lossCoef(omega_ * sigma_); std::cout << std::setw(20) << (omega_ * sigma_) << std::endl;
     ConstantCoefficient negMassCoef(omega_ * omega_ * epsilon_ * epsilon0_);
+
+    DenseMatrix sigmaMat(3);
+    sigmaMat(0, 0) = 3.0; sigmaMat(1, 1) = 2.0; sigmaMat(2, 2) = 4.0;
+    sigmaMat(0, 2) = 0.0; sigmaMat(2, 0) = 0.0;
+    sigmaMat(0, 1) = M_SQRT1_2; sigmaMat(1, 0) = M_SQRT1_2; // 1/sqrt(2) in cmath
+    sigmaMat(1, 2) = M_SQRT1_2; sigmaMat(2, 1) = M_SQRT1_2;
+    Vector omega(dim); omega = omega_;
+    sigmaMat.LeftScaling(omega);
+    MatrixConstantCoefficient aniLossCoef(sigmaMat);
+    //PrintMatrixConstantCoefficient(aniLossCoef);
+
+    DenseMatrix epsilonMat(3);
+    epsilonMat(0, 0) = 2.0; epsilonMat(1, 1) = 3.0; epsilonMat(2, 2) = 4.0;
+    epsilonMat(0, 2) = 0.0; epsilonMat(2, 0) = 0.0;
+    epsilonMat(0, 1) = 0.0; epsilonMat(1, 0) = 0.0; // 1/sqrt(2) in cmath
+    epsilonMat(1, 2) = 0.0; epsilonMat(2, 1) = 0.0;
+    omega = -omega_ * omega_ * epsilon0_;
+    epsilonMat.LeftScaling(omega);
+    MatrixConstantCoefficient aniMassCoef(epsilonMat);
+    // PrintMatrixConstantCoefficient(aniMassCoef);
 
     SesquilinearForm* a = new SesquilinearForm(fespace, conv);
     if (pa) { a->SetAssemblyLevel(AssemblyLevel::PARTIAL); }
@@ -358,8 +461,18 @@ int main(int argc, char* argv[])
     case 1:
         a->AddDomainIntegrator(new CurlCurlIntegrator(stiffnessCoef),
             NULL);
-        a->AddDomainIntegrator(new VectorFEMassIntegrator(massCoef),
+        a->AddDomainIntegrator(new VectorFEMassIntegrator(aniMassCoef),
             new VectorFEMassIntegrator(lossCoef));
+        //a->AddBoundaryIntegrator(new VectorFEMassIntegrator(m_rbcACoef), NULL, rbc_bdr); // need to check
+        if (etaInvCoef_)
+        {
+            if (logging_ > 0)
+            {
+                cout << "Adding boundary integrator for absorbing boundary" << endl;
+            }
+            a->AddBoundaryIntegrator(
+                NULL, new VectorFEMassIntegrator(*etaInvCoef_), abc_marker_);
+        }
         break;
     case 2:
         a->AddDomainIntegrator(new DivDivIntegrator(stiffnessCoef),
@@ -417,28 +530,30 @@ int main(int argc, char* argv[])
 
     a->FormLinearSystem(ess_tdof_list, u, b, A, U, B);
     std::cout << "Size of linear system: " << A->Width() << endl << endl;
-    std::cout << "Printing Matrix A..." << std::endl;
-    std::ofstream A_file("A_matrix.txt");
-    A->PrintMatlab(A_file);
+    //std::cout << "Printing Matrix A..." << std::endl;
+    //std::ofstream A_file("Asp_matrix.txt");
+    //A->PrintMatlab(A_file);
 
     ComplexSparseMatrix* Asp_blk = a->AssembleComplexSparseMatrix();
     SparseMatrix* Asp = Asp_blk->GetSystemMatrix();
-    std::cout << "Printing Matrix Asp..." << std::endl;
-    std::ofstream Asp_file("Asp_matrix.txt");
-    Asp->PrintMatlab(Asp_file);
+     //std::cout << "Printing Matrix Asp..." << std::endl;
+     //std::ofstream Asp_file("Asp_matrix.txt");
+     //Asp->PrintMatlab(Asp_file);
 
-    std::cout << "Printing Matrix B..." << std::endl;
-    std::ofstream B_file("B_matrix.txt");
-    B.Print(B_file);
+     //std::cout << "Printing Matrix B..." << std::endl;
+     //std::ofstream B_file("B_matrix.txt");
+     //B.Print(B_file);
+     //exit(0);
 
-    std::cout << "Printing Matrix b..." << std::endl;
-    std::ofstream bb_file("bb_matrix.txt");
-    b.Print(bb_file);
+    // std::cout << "Printing Matrix b..." << std::endl;
+    // std::ofstream bb_file("bb_matrix.txt");
+    // b.Print(bb_file);
 
 
     // 11. Define and apply a GMRES solver for AU=B with a block diagonal
     //     preconditioner based on the appropriate sparse smoother.
-#ifdef MFEM_USE_SUITESPARSE
+    mfem::StopWatch timer;
+#ifndef MFEM_USE_SUITESPARSE
     {
         Array<int> blockOffsets;
         blockOffsets.SetSize(3);
@@ -508,18 +623,44 @@ int main(int argc, char* argv[])
             fgmres.Mult(B, U);
         }
     }
-#else
+#elif !defined(MFEM_USE_MKL_PARDISO)
     {
-        ComplexUMFPackSolver csolver(*A.As<ComplexSparseMatrix>());
+        /*ComplexUMFPackSolver csolver(*A.As<ComplexSparseMatrix>());
         csolver.Control[UMFPACK_ORDERING] = UMFPACK_ORDERING_METIS;
         csolver.SetPrintLevel(3);
-        csolver.Mult(B, U);
+        csolver.Mult(B, U);*/
+
+         timer.Start();
+         UMFPackSolver umf_solver;
+         umf_solver.Control[UMFPACK_ORDERING] = UMFPACK_ORDERING_METIS;
+         umf_solver.SetOperator(*Asp);
+         umf_solver.SetPrintLevel(1);
+         umf_solver.Mult(B, U);
+         timer.Stop();
+         double elapsed_time = timer.RealTime();
+         mfem::out << "UMFPACK solver took " << elapsed_time << " seconds." << std::endl;
+    }
+#else
+    {
+        timer.Start();
+        // if out of memory, set "MKL_PARDISO_OOC_MAX_CORE_SIZE = 32000 or more" in environment variable;
+        PardisoSolver pardiso_solver;
+        pardiso_solver.SetPrintLevel(1); // set to 1 if want to see details
+        pardiso_solver.SetOperator(*Asp);
+        pardiso_solver.Mult(B, U);
+        timer.Stop();
+        double elapsed_time = timer.RealTime();
+        mfem::out << "Pardiso solver took " << elapsed_time << " seconds." << std::endl;
     }
 #endif
 
     // 12. Recover the solution as a finite element grid function and compute the
     //     errors if the exact solution is known.
     a->RecoverFEMSolution(U, b, u);
+
+    //std::cout << "Printing solution u..." << std::endl;
+    //std::ofstream u_file("u_field.txt");
+    //u.Print(u_file);
 
     if (exact_sol)
     {
@@ -552,9 +693,9 @@ int main(int argc, char* argv[])
     // 13. Save the refined mesh and the solution. This output can be viewed
     //     later using GLVis: "glvis -m mesh -g sol".
     {
-        ofstream mesh_ofs("refined.mesh");
+        ofstream mesh_ofs("refined_11.mesh");
         mesh_ofs.precision(8);
-        mesh.Print(mesh_ofs);
+        mesh->Print(mesh_ofs);
 
         ofstream sol_r_ofs("sol_r.gf");
         ofstream sol_i_ofs("sol_i.gf");
@@ -573,9 +714,9 @@ int main(int argc, char* argv[])
         socketstream sol_sock_i(vishost, visport);
         sol_sock_r.precision(8);
         sol_sock_i.precision(8);
-        sol_sock_r << "solution\n" << mesh << u.real()
+        sol_sock_r << "solution\n" << *mesh << u.real()
             << "window_title 'Solution: Real Part'" << flush;
-        sol_sock_i << "solution\n" << mesh << u.imag()
+        sol_sock_i << "solution\n" << *mesh << u.imag()
             << "window_title 'Solution: Imaginary Part'" << flush;
     }
     if (visualization && exact_sol)
@@ -588,9 +729,9 @@ int main(int argc, char* argv[])
         socketstream sol_sock_i(vishost, visport);
         sol_sock_r.precision(8);
         sol_sock_i.precision(8);
-        sol_sock_r << "solution\n" << mesh << u_exact->real()
+        sol_sock_r << "solution\n" << *mesh << u_exact->real()
             << "window_title 'Error: Real Part'" << flush;
-        sol_sock_i << "solution\n" << mesh << u_exact->imag()
+        sol_sock_i << "solution\n" << *mesh << u_exact->imag()
             << "window_title 'Error: Imaginary Part'" << flush;
     }
     if (visualization)
@@ -601,7 +742,7 @@ int main(int argc, char* argv[])
         int  visport = 19916;
         socketstream sol_sock(vishost, visport);
         sol_sock.precision(8);
-        sol_sock << "solution\n" << mesh << u_t
+        sol_sock << "solution\n" << *mesh << u_t
             << "window_title 'Harmonic Solution (t = 0.0 T)'"
             << "pause\n" << flush;
 
@@ -617,17 +758,19 @@ int main(int argc, char* argv[])
 
             add(cos(2.0 * M_PI * t), u.real(),
                 sin(-2.0 * M_PI * t), u.imag(), u_t);
-            sol_sock << "solution\n" << mesh << u_t
+            sol_sock << "solution\n" << *mesh << u_t
                 << "window_title '" << oss.str() << "'" << flush;
             i++;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
     // 14b. Save data in the ParaView format
-    ParaViewDataCollection paraview_dc("ex0_point_source_em_test1_o2", &mesh);
+    ParaViewDataCollection paraview_dc("ex0_point_source_em_test1_o2", mesh);
     paraview_dc.SetDataFormat(VTKFormat::ASCII);
     paraview_dc.SetPrefixPath("ParaView");
-    paraview_dc.SetLevelsOfDetail(order);
+    paraview_dc.SetLevelsOfDetail(order+1);
     //paraview_dc.SetCycle(0);
     paraview_dc.SetDataFormat(VTKFormat::BINARY);
     paraview_dc.SetHighOrderOutput(true);
@@ -635,6 +778,24 @@ int main(int argc, char* argv[])
     paraview_dc.RegisterField("real", &u.real());
     paraview_dc.RegisterField("imag", &u.imag());
     paraview_dc.Save();
+
+    //14c. Save to vtp
+    const std::string prefix_path = "output_meshes/";
+    std::string dcfname = "ex999";
+    VisItDataCollection dc(dcfname, mesh);
+    dc.SetPrefixPath(prefix_path);
+    dc.RegisterField("real", &u.real());
+    dc.RegisterField("imag", &u.imag());
+    dc.Save();
+
+    // Save meshes and grid functions in VTK format
+    std::string fname = "ex99.vtp";
+    std::fstream vtkFs(fname.c_str(), std::ios::out);
+
+    const int ref = 0;
+    mesh->PrintVTK(vtkFs, ref);
+    u.real().SaveVTK(vtkFs, "real", ref);
+    u.imag().SaveVTK(vtkFs, "imag", ref);
 
     // 15. Free the used memory.
     delete a;
@@ -698,7 +859,7 @@ void u2_imag_exact(const Vector& x, Vector& v)
     v.SetSize(dim); v = 0.0; v[dim - 1] = u0_imag_exact(x);
 }
 
-Mesh LoadMeshNew(const std::string& path)
+Mesh* LoadMeshNew(const std::string& path)
 {
     // Read the (serial) mesh from the given mesh file. Handle preparation for refinement and
     // orientations here to avoid possible reorientations and reordering later on. MFEM
@@ -726,7 +887,7 @@ Mesh LoadMeshNew(const std::string& path)
             // mesh::ConvertMeshNastran(path, fo);
         }
 
-        return Mesh(fi, 1, 1, true);
+        return new Mesh(fi, 1, 1, true);
     }
     // Otherwise, just rely on MFEM load the mesh.
     named_ifgzstream fi(path);
@@ -734,7 +895,48 @@ Mesh LoadMeshNew(const std::string& path)
     {
         MFEM_ABORT("Unable to open mesh file \"" << path << "\"!");
     }
-    Mesh mesh = Mesh(fi, 1, 1, true);
-    mesh.EnsureNodes();
+    Mesh* mesh = new Mesh(fi, 1, 1, true);
+    mesh->EnsureNodes();
     return mesh;
 }
+
+void PrintMatrixConstantCoefficient(mfem::MatrixConstantCoefficient& coeff)
+{
+    const mfem::DenseMatrix& mat = coeff.GetMatrix();
+    int height = mat.Height();
+    int width = mat.Width();
+
+    // Set the output format
+    std::cout << std::scientific << std::setprecision(4) << std::right;
+
+    for (int i = 0; i < height; i++)
+    {
+        for (int j = 0; j < width; j++)
+        {
+            std::cout << std::setw(16) << mat(i, j) << " ";
+        }
+        std::cout << std::endl;
+    }
+}
+
+void AttrToMarker(int max_attr, const Array<int>& attrs, Array<int>& marker)
+{
+    MFEM_ASSERT(attrs.Max() <= max_attr, "Invalid attribute number present.");
+
+    marker.SetSize(max_attr);
+    if (attrs.Size() == 1 && attrs[0] == -1)
+    {
+        marker = 1;
+    }
+    else
+    {
+        marker = 0;
+        for (int j = 0; j < attrs.Size(); j++)
+        {
+            int attr = attrs[j];
+            MFEM_VERIFY(attr > 0, "Attribute number less than one!");
+            marker[attr - 1] = 1;
+        }
+    }
+}
+

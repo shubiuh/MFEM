@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
 //
@@ -370,6 +370,8 @@ void LinearForm::AssembleDelta()
 {
    if (domain_delta_integs.Size() == 0) { return; }
 
+   int elems_found = 0;
+
    if (!HaveDeltaLocations())
    {
       int sdim = fes->GetMesh()->SpaceDimension();
@@ -383,31 +385,35 @@ void LinearForm::AssembleDelta()
                      "Point dim " << center.Size() <<
                      " does not match space dim " << sdim);
       }
-      fes->GetMesh()->FindPoints(centers, domain_delta_integs_elem_id,
-                                 domain_delta_integs_ip);
+      // fes->GetMesh()->FindPoints(centers, domain_delta_integs_elem_id,
+      //                            domain_delta_integs_ip); // old version: find only one element
+       elems_found = fes->GetMesh()->FindVertex(center, domain_delta_integs_elem_id,
+                                  domain_delta_integs_ip); // only support one center point, needs to fix
    }
 
    Array<int> vdofs;
    Vector elemvect;
-   for (int i = 0; i < domain_delta_integs.Size(); i++)
+   for (int i = 0; i < domain_delta_integs.Size(); i++) // needs to fix to accept more than one delta source
+    for (int j = 0; j < domain_delta_integs_elem_id.Size(); j++)
    {
-      int elem_id = domain_delta_integs_elem_id[i];
+      int elem_id = domain_delta_integs_elem_id[j];
       // The delta center may be outside of this sub-domain, or
       // (Par)Mesh::FindPoints() failed to find this point:
       if (elem_id < 0) { continue; }
 
-      const IntegrationPoint &ip = domain_delta_integs_ip[i];
+      const IntegrationPoint &ip = domain_delta_integs_ip[j];
       ElementTransformation &Trans = *fes->GetElementTransformation(elem_id);
       Trans.SetIntPoint(&ip);
 
       fes->GetElementVDofs(elem_id, vdofs);
       domain_delta_integs[i]->AssembleDeltaElementVect(*fes->GetFE(elem_id),
                                                        Trans, elemvect);
+      elemvect /= elems_found; //scale delta vector
       AddElementVector(vdofs, elemvect);
    }
 }
 
-LinearForm & LinearForm::operator=(double value)
+LinearForm & LinearForm::operator=(real_t value)
 {
    Vector::operator=(value);
    return *this;

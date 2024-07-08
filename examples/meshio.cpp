@@ -670,7 +670,7 @@ namespace palace
                     input.read(reinterpret_cast<char*>(&nodes_start), sizeof(int));
                 }
                 MFEM_VERIFY(version == 4, "Only COMSOL files with Mesh version 4 are supported!");
-                MFEM_VERIFY(sdim == 3, "COMSOL mesh nodes are required to be in 2D or 3D space!");
+                MFEM_VERIFY(sdim > 1, "COMSOL mesh nodes are required to be in 2D or 3D space!");
                 MFEM_VERIFY(num_nodes > 0, "COMSOL mesh file contains no nodes!");
                 MFEM_VERIFY(nodes_start >= 0, "COMSOL mesh nodes have a negative starting tag!");
             }
@@ -839,9 +839,9 @@ namespace palace
                                 }
 
                                 // Debug
-                                // std::cout << "Finished parsing " << num_elem
-                                //           << " elements with type " << elem_type
-                                //           << " (parsed types " << parsed_types + 1 << ")\n";
+                                std::cout << "Finished parsing " << num_elem
+                                          << " elements with type " << elem_type
+                                          << " (parsed types " << parsed_types + 1 << ")\n";
 
                                 // Finished with this element type, on to the next.
                                 parsed_types++;

@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
 //
@@ -106,9 +106,11 @@ int socketbuf::open(const char hostname[], int port)
 
    hints.ai_family = AF_UNSPEC;
    hints.ai_socktype = SOCK_STREAM;
+   hints.ai_flags = 0;
    hints.ai_protocol = 0;
 
-   int s = getaddrinfo(hostname, NULL, &hints, &res);
+   std::string portStr = std::to_string(port);
+   int s = getaddrinfo(hostname, portStr.c_str(), &hints, &res);
    if (s != 0)
    {
       socket_descriptor = -3;
@@ -132,7 +134,7 @@ int socketbuf::open(const char hostname[], int port)
       {
          closesocket(socket_descriptor);
          socket_descriptor = -2;
-         return -1;
+         continue;
       }
 #endif
 
@@ -142,10 +144,11 @@ int socketbuf::open(const char hostname[], int port)
          socket_descriptor = -2;
          continue;
       }
+      break;
    }
 
    freeaddrinfo(res);
-   return 0;
+   return (socket_descriptor < 0) ? -1 : 0;
 }
 
 int socketbuf::close()

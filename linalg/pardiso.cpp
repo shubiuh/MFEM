@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
 //
@@ -34,8 +34,15 @@ PardisoSolver::PardisoSolver()
    iparm[10] = 1;
    // Perform a check on the input data
    iparm[26] = 1;
+#ifdef MFEM_USE_SINGLE
+   // Single precision
+   iparm[27] = 1;
+#endif
    // 0-based indexing in CSR data structure
    iparm[34] = 1;
+   // in-core (0, 1) or out-of-core (2) https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2023-0/pardiso-iparm-parameter.html
+   // remember to set MKL_PARDISO_OOC_MAX_CORE_SIZE=XXXXXXX in the environment variable
+   iparm[59] = 1;
    // Maximum number of numerical factorizations
    maxfct = 1;
    // Which factorization to use. This parameter is ignored and always assumed
@@ -67,11 +74,11 @@ void PardisoSolver::SetOperator(const Operator &op)
 
    const int *Ap = mat->HostReadI();
    const int *Ai = mat->HostReadJ();
-   const double *Ax = mat->HostReadData();
+   const real_t *Ax = mat->HostReadData();
 
    csr_rowptr = new int[m + 1];
    reordered_csr_colind = new int[nnz];
-   reordered_csr_nzval = new double[nnz];
+   reordered_csr_nzval = new real_t[nnz];
 
    for (int i = 0; i <= m; i++)
    {

@@ -1,4 +1,4 @@
-# Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+# Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 # at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 # LICENSE and NOTICE for details. LLNL-CODE-806117.
 #
@@ -18,9 +18,10 @@ set(USER_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/config/user.cmake" CACHE PATH
   "Path to optional user configuration file.")
 
 # Require C++11 and disable compiler-specific extensions
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to use.")
+set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL
+"Force the use of the chosen C++ standard.")
+set(CMAKE_CXX_EXTENSIONS OFF CACHE BOOL "Enable C++ standard extensions.")
 
 # Load user settings before the defaults - this way the defaults will not
 # overwrite the user set options. If the user has not set all options, we still
@@ -57,7 +58,7 @@ project(mfem NONE)
 # Current version of MFEM, see also `makefile`.
 #   mfem_VERSION = (string)
 #   MFEM_VERSION = (int)   [automatically derived from mfem_VERSION]
-set(${PROJECT_NAME}_VERSION 4.6.1)
+set(${PROJECT_NAME}_VERSION 4.7.1)
 
 # Prohibit in-source build
 if (${PROJECT_SOURCE_DIR} STREQUAL ${PROJECT_BINARY_DIR})
@@ -86,14 +87,15 @@ if (MFEM_USE_STRUMPACK OR MFEM_USE_MUMPS)
   # Just needed to find the MPI_Fortran libraries to link with
   set(XSDK_ENABLE_Fortran ON)
 endif()
-# SUNDIALS, STRUMPACK, Ginkgo, RAJA and Umpire require C++14:
+# SUNDIALS, STRUMPACK, Ginkgo, Tribol, RAJA and Umpire require C++14:
 if ((MFEM_USE_SUNDIALS OR
      MFEM_USE_STRUMPACK OR
      MFEM_USE_GINKGO OR
+     MFEM_USE_TRIBOL OR
      MFEM_USE_RAJA OR
      MFEM_USE_UMPIRE) AND
     ("${CMAKE_CXX_STANDARD}" LESS "14"))
-  set(CMAKE_CXX_STANDARD 14)
+  set(CMAKE_CXX_STANDARD 14 CACHE STRING "C++ standard to use." FORCE)
 endif()
 
 # Include xSDK default CMake file.
@@ -104,7 +106,8 @@ enable_language(CXX)
 if (MINGW)
    # MinGW GCC does not expose the functions jn/_jn, yn/_yn (used in Example
    # 25/25p) unless we use '-std=gnu++11':
-   set(CMAKE_CXX_EXTENSIONS ON)
+   set(CMAKE_CXX_EXTENSIONS ON
+      CACHE BOOL "Enable C++ standard extensions." FORCE)
 endif()
 if (MFEM_USE_CUDA)
    if (MFEM_USE_HIP)
@@ -115,9 +118,11 @@ if (MFEM_USE_CUDA)
       set(CMAKE_CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
    endif()
    enable_language(CUDA)
-   set(CMAKE_CUDA_STANDARD ${CMAKE_CXX_STANDARD})
-   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-   set(CMAKE_CUDA_EXTENSIONS OFF)
+   set(CMAKE_CUDA_STANDARD ${CMAKE_CXX_STANDARD} CACHE STRING
+      "CUDA standard to use.")
+   set(CMAKE_CUDA_STANDARD_REQUIRED ON CACHE BOOL
+      "Force the use of the chosen CUDA standard.")
+   set(CMAKE_CUDA_EXTENSIONS OFF CACHE BOOL "Enable CUDA standard extensions.")
    set(CUDA_FLAGS "--expt-extended-lambda")
    if (CMAKE_VERSION VERSION_LESS 3.18.0)
       set(CUDA_FLAGS "-arch=${CUDA_ARCH} ${CUDA_FLAGS}")
@@ -139,10 +144,9 @@ if (MFEM_USE_CUDA)
       set(CMAKE_CUDA_HOST_LINK_LAUNCHER ${CMAKE_CXX_COMPILER})
    endif()
    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} ${CUDA_FLAGS}")
+   find_package(CUDAToolkit REQUIRED)
    set(CUSPARSE_FOUND TRUE)
-   set(CUSPARSE_LIBRARIES "cusparse")
-   set(CUBLAS_FOUND TRUE)
-   set(CUBLAS_LIBRARIES "cublas")
+   get_target_property(CUSPARSE_LIBRARIES CUDA::cusparse LOCATION)
 endif()
 
 if (XSDK_ENABLE_C)
@@ -179,6 +183,19 @@ endif()
 #-------------------------------------------------------------------------------
 # Process configuration options
 #-------------------------------------------------------------------------------
+
+# MFEM_PRECISION -> MFEM_USE_SINGLE, MFEM_USE_DOUBLE
+if (MFEM_PRECISION MATCHES "^(double|Double|DOUBLE)$")
+  set(MFEM_USE_SINGLE OFF)
+  set(MFEM_USE_DOUBLE ON)
+elseif (MFEM_PRECISION MATCHES "^(single|Single|SINGLE)$")
+  set(MFEM_USE_SINGLE ON)
+  set(MFEM_USE_DOUBLE OFF)
+else()
+  message(FATAL_ERROR " *** Invalid floating-point precision: "
+    "MFEM_PRECISION = ${MFEM_PRECISION}")
+endif()
+message(STATUS "Floating-point precision: MFEM_PRECISION = ${MFEM_PRECISION}")
 
 # MFEM_DEBUG
 if (CMAKE_BUILD_TYPE MATCHES "Debug|debug|DEBUG")
@@ -366,6 +383,13 @@ if (MFEM_USE_NETCDF)
   find_package(NetCDF REQUIRED)
 endif()
 
+#COMSOL
+if (MFEM_USE_COMSOL)
+  # Commands to be executed if MFEM_USE_COMSOL is true
+  # Set GMSH_BIN to ON
+  set(MFEM_GMSH_BIN ON)
+endif()
+
 # MPFR
 if (MFEM_USE_MPFR)
   find_package(MPFR REQUIRED)
@@ -487,6 +511,15 @@ if (MFEM_USE_PARELAG)
    find_package(PARELAG REQUIRED)
 endif()
 
+# Tribol
+if (MFEM_USE_TRIBOL)
+  if (MFEM_USE_MPI)
+    find_package(Tribol REQUIRED tribol redecomp)
+  else()
+    message(FATAL_ERROR " *** Tribol requires that MPI be enabled.")
+  endif()
+endif()
+
 # Enzyme
 if (MFEM_USE_ENZYME)
    find_package(ENZYME REQUIRED)
@@ -531,8 +564,8 @@ find_package(Threads REQUIRED)
 set(MFEM_TPLS OPENMP HYPRE LAPACK BLAS SuperLUDist STRUMPACK METIS SuiteSparse
     SUNDIALS PETSC SLEPC MUMPS AXOM FMS CONDUIT Ginkgo GNUTLS GSLIB
     NETCDF MPFR PUMI HIOP POSIXCLOCKS MFEMBacktrace ZLIB OCCA CEED RAJA UMPIRE
-    ADIOS2 CUBLAS CUSPARSE MKL_CPARDISO MKL_PARDISO AMGX CALIPER CODIPACK
-    BENCHMARK PARELAG MPI_CXX HIP HIPSPARSE MOONOLITH BLITZ ALGOIM ENZYME)
+    ADIOS2 CUSPARSE MKL_CPARDISO MKL_PARDISO AMGX CALIPER CODIPACK
+    BENCHMARK PARELAG TRIBOL MPI_CXX HIP HIPSPARSE MOONOLITH BLITZ ALGOIM ENZYME)
 
 # Add all *_FOUND libraries in the variable TPL_LIBRARIES.
 set(TPL_LIBRARIES "")
@@ -593,13 +626,21 @@ set(MFEM_INSTALL_DIR ${CMAKE_INSTALL_PREFIX} CACHE PATH
 
 # Declaring the library
 mfem_add_library(mfem ${SOURCES} ${HEADERS} ${MASTER_HEADERS})
+if (MSVC)
+  if(NOT MFEM_USE_CUDA)
+    target_compile_options(mfem PRIVATE /MP)
+  endif()
+endif()
 # message(STATUS "TPL_LIBRARIES = ${TPL_LIBRARIES}")
 target_link_libraries(mfem PUBLIC ${TPL_LIBRARIES})
 if (MINGW)
   target_link_libraries(mfem PRIVATE ws2_32)
 endif()
 if (MSVC)
-  target_compile_options(mfem PUBLIC "/wd4819")
+  if(NOT MFEM_USE_CUDA)
+    target_compile_options(mfem PUBLIC "/wd4819")
+    add_compile_options(/MP)
+  endif()
 endif()
 message(STATUS "TPL_INCLUDE_DIRS = ${TPL_INCLUDE_DIRS}")
 target_include_directories(mfem

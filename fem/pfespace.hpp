@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// Copyright (c) 2010-2024, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
 //
@@ -124,8 +124,8 @@ private:
    void GetGhostVertexDofs(const MeshId &id, Array<int> &dofs) const;
    void GetGhostEdgeDofs(const MeshId &edge_id, Array<int> &dofs) const;
    void GetGhostFaceDofs(const MeshId &face_id, Array<int> &dofs) const;
-
    void GetGhostDofs(int entity, const MeshId &id, Array<int> &dofs) const;
+
    /// Return the dofs associated with the interior of the given mesh entity.
    void GetBareDofs(int entity, int index, Array<int> &dofs) const;
 
@@ -248,7 +248,11 @@ public:
        If the FiniteElementCollection, @a f, is NULL (default), the FE
        collection used by @a global_fes will be reused. If @a f is not NULL, it
        must be the same as, or a copy of, the FE collection used by
-       @a global_fes. */
+       @a global_fes.
+
+       @note Currently the @a partitioning array is not used by this
+       constructor, it is required for general parallel variable-order support.
+   */
    ParFiniteElementSpace(ParMesh *pm, const FiniteElementSpace *global_fes,
                          const int *partitioning,
                          const FiniteElementCollection *f = NULL);
@@ -284,11 +288,17 @@ public:
    /// Return the number of local vector true dofs.
    int GetTrueVSize() const override { return ltdof_size; }
 
-   /// Returns indexes of degrees of freedom in array dofs for i'th element.
-   DofTransformation *GetElementDofs(int i, Array<int> &dofs) const override;
+   /// Returns indexes of degrees of freedom in array dofs for i'th element and
+   /// returns the DofTransformation data in a user-provided object.
+   using FiniteElementSpace::GetElementDofs;
+   void GetElementDofs(int i, Array<int> &dofs,
+                       DofTransformation &doftrans) const override;
 
-   /// Returns indexes of degrees of freedom for i'th boundary element.
-   DofTransformation *GetBdrElementDofs(int i, Array<int> &dofs) const override;
+   /// Returns indexes of degrees of freedom for i'th boundary element and
+   /// returns the DofTransformation data in a user-provided object.
+   using FiniteElementSpace::GetBdrElementDofs;
+   void GetBdrElementDofs(int i, Array<int> &dofs,
+                          DofTransformation &doftrans) const override;
 
    /** Returns the indexes of the degrees of freedom for i'th face
        including the dofs for the edges and the vertices of the face. */
@@ -328,7 +338,7 @@ public:
    { return (new HypreParVector(MyComm,GlobalTrueVSize(),GetTrueDofOffsets()));}
 
    /// Scale a vector of true dofs
-   void DivideByGroupSize(double *vec);
+   void DivideByGroupSize(real_t *vec);
 
    /// Return a reference to the internal GroupCommunicator (on VDofs)
    GroupCommunicator &GroupComm() { return *gcomm; }
@@ -355,7 +365,7 @@ public:
        boundary attributes marked in the array bdr_attr_is_ess. */
    void GetEssentialTrueDofs(const Array<int> &bdr_attr_is_ess,
                              Array<int> &ess_tdof_list,
-                             int component = -1) override;
+                             int component = -1) const override;
 
    /** If the given ldof is owned by the current processor, return its local
        tdof number, otherwise return -1 */
@@ -382,6 +392,8 @@ public:
    // Face-neighbor functions
    void ExchangeFaceNbrData();
    int GetFaceNbrVSize() const { return num_face_nbr_dofs; }
+   void GetFaceNbrElementVDofs(int i, Array<int> &vdofs,
+                               DofTransformation &doftrans) const;
    DofTransformation *GetFaceNbrElementVDofs(int i, Array<int> &vdofs) const;
    void GetFaceNbrFaceVDofs(int i, Array<int> &vdofs) const;
    const FiniteElement *GetFaceNbrFE(int i) const;
